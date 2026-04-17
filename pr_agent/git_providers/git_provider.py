@@ -338,6 +338,27 @@ class GitProvider(ABC):
     def publish_inline_comments(self, comments: list[dict]):
         pass
 
+    def get_bot_review_comments(self) -> list[dict]:
+        """
+        Return the bot's existing inline (review) comments on the current PR.
+
+        Each dict must contain at least:
+            - 'id':   provider-specific comment id (used by edit_review_comment)
+            - 'body': full comment body (used for marker extraction)
+
+        Default: return []. Providers that support inline-comment dedup should override.
+        """
+        return []
+
+    def edit_review_comment(self, comment_id, body: str) -> bool:
+        """
+        Edit an existing inline (review) comment in place.
+
+        Returns True on success, False otherwise. Default: return False (unsupported),
+        which causes persistent-inline-comment dedup to fall back to the create-new path.
+        """
+        return False
+
     @abstractmethod
     def remove_initial_comment(self):
         pass

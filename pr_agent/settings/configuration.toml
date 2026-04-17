@@ -137,6 +137,11 @@ extra_instructions = ""
 enable_help_text=false
 enable_chat_text=false
 persistent_comment=true
+# Deduplicate inline suggestions across re-runs by embedding a content-hash marker.
+# "update": edit matching existing comment in place (default)
+# "skip":   skip if a matching comment already exists
+# "off":    always post a new comment (legacy behavior)
+persistent_inline_comments = "update"
 max_history_len=4
 publish_output_no_suggestions=true
 # suggestions scoring
