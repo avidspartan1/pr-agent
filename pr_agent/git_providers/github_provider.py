@@ -22,7 +22,6 @@ from ..algo.inline_comments_dedup import (
     MARKER_SUFFIX,
     PERSISTENT_MODE_OFF,
     PERSISTENT_MODE_SKIP,
-    PERSISTENT_MODE_UPDATE,
     append_marker,
     build_marker_index,
     generate_marker,
@@ -569,6 +568,7 @@ class GithubProvider(GitProvider):
         """
         try:
             our_app_name = (get_settings().get("GITHUB.APP_NAME", "") or "").lower()
+            bot_user_id = (self.get_user_id() or "").lower() if self.deployment_type == "user" else ""
             headers, existing = self.pr._requester.requestJsonAndCheck(
                 "GET", f"{self.pr.url}/comments"
             )
@@ -579,7 +579,7 @@ class GithubProvider(GitProvider):
                 if self.deployment_type == "app":
                     same_author = bool(our_app_name) and our_app_name in login
                 elif self.deployment_type == "user":
-                    same_author = bool(self.github_user_id) and login == str(self.github_user_id).lower()
+                    same_author = bool(bot_user_id) and login == bot_user_id
                 if not same_author:
                     continue
                 out.append({

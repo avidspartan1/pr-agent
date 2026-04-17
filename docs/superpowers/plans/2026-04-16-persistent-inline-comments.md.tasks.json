@@ -4,20 +4,20 @@
     {
       "id": 0,
       "subject": "Task 0: Marker helper module with unit tests",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Pure provider-agnostic primitives for generating, extracting, and indexing inline-comment markers.\n\n**Files:**\n- Create: `pr_agent/algo/inline_comments_dedup.py`\n- Create: `tests/unittest/test_inline_comments_dedup.py`\n\n**Verify:** `pytest tests/unittest/test_inline_comments_dedup.py -v`\n\n```json:metadata\n{\"files\": [\"pr_agent/algo/inline_comments_dedup.py\", \"tests/unittest/test_inline_comments_dedup.py\"], \"verifyCommand\": \"pytest tests/unittest/test_inline_comments_dedup.py -v\", \"acceptanceCriteria\": [\"helpers implemented\", \"tests pass\"]}\n```"
     },
     {
       "id": 1,
       "subject": "Task 1: Base-class capabilities and config setting",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** Declare new optional capabilities on GitProvider (no-op defaults) and expose persistent_inline_comments setting.\n\n**Files:**\n- Modify: `pr_agent/git_providers/git_provider.py`\n- Modify: `pr_agent/settings/configuration.toml`\n\n**Verify:** `pytest tests/unittest/ -x`\n\n```json:metadata\n{\"files\": [\"pr_agent/git_providers/git_provider.py\", \"pr_agent/settings/configuration.toml\"], \"verifyCommand\": \"pytest tests/unittest/ -x\", \"acceptanceCriteria\": [\"base-class methods added\", \"config setting declared\"]}\n```"
     },
     {
       "id": 2,
       "subject": "Task 2: GitHub dedup implementation with tests",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 1],
       "description": "**Goal:** Implement get_bot_review_comments, edit_review_comment and dedup-aware publish_code_suggestions on GithubProvider.\n\n**Files:**\n- Modify: `pr_agent/git_providers/github_provider.py`\n- Create: `tests/unittest/test_github_inline_dedup.py`\n\n**Verify:** `pytest tests/unittest/test_github_inline_dedup.py -v`\n\n```json:metadata\n{\"files\": [\"pr_agent/git_providers/github_provider.py\", \"tests/unittest/test_github_inline_dedup.py\"], \"verifyCommand\": \"pytest tests/unittest/test_github_inline_dedup.py -v\", \"acceptanceCriteria\": [\"GithubProvider methods implemented\", \"publish_code_suggestions dedup-aware\", \"tests cover all modes & failure paths\"]}\n```"
     },
@@ -36,5 +36,5 @@
       "description": "**Goal:** Add persistent_inline_comments row to /improve tool docs.\n\n**Files:**\n- Modify: `docs/docs/tools/improve.md`\n\n**Verify:** `grep -n persistent_inline_comments docs/docs/tools/improve.md`\n\n```json:metadata\n{\"files\": [\"docs/docs/tools/improve.md\"], \"verifyCommand\": \"grep -n persistent_inline_comments docs/docs/tools/improve.md\", \"acceptanceCriteria\": [\"new doc row added\"]}\n```"
     }
   ],
-  "lastUpdated": "2026-04-16T00:00:00Z"
+  "lastUpdated": "2026-04-16T12:00:00Z"
 }

@@ -90,8 +90,10 @@ class TestUpdateMode:
         with _set_mode("update"):
             provider.publish_code_suggestions([s])
         provider.edit_review_comment.assert_called_once()
-        called_id = provider.edit_review_comment.call_args[0][0]
+        called_id, called_body = provider.edit_review_comment.call_args[0]
         assert called_id == 777
+        assert marker in called_body
+        assert s["body"] in called_body
         provider.pr.create_review.assert_not_called()
 
     def test_edit_failure_falls_back_to_create(self, provider):
@@ -149,3 +151,52 @@ class TestSkipMode:
         with _set_mode("skip"):
             provider.publish_code_suggestions([_sug()])
         provider.pr.create_review.assert_called_once()
+
+
+class TestGetBotReviewCommentsFiltering:
+    """Exercises the real get_bot_review_comments filter — not the mocked-out fixture one."""
+
+    def _make_provider_with_raw_comments(self, raw, deployment_type, user_id=None, app_name=""):
+        with patch("pr_agent.git_providers.github_provider.GithubProvider._get_repo"), \
+             patch("pr_agent.git_providers.github_provider.GithubProvider.set_pr"), \
+             patch("pr_agent.git_providers.github_provider.GithubProvider._get_pr"):
+            from pr_agent.git_providers.github_provider import GithubProvider
+            p = GithubProvider.__new__(GithubProvider)
+            p.pr = MagicMock()
+            p.pr.url = "https://api.github.com/repos/owner/repo/pulls/1"
+            p.pr._requester.requestJsonAndCheck = MagicMock(return_value=({}, raw))
+            p.deployment_type = deployment_type
+            p.github_user_id = user_id
+            return p, app_name
+
+    def test_app_deployment_filters_by_app_name(self):
+        raw = [
+            {"id": 1, "body": "bot one", "user": {"login": "my-bot[bot]"}, "path": "a.py",
+             "line": 1, "start_line": None},
+            {"id": 2, "body": "human one", "user": {"login": "alice"}, "path": "a.py",
+             "line": 2, "start_line": None},
+        ]
+        provider, app_name = self._make_provider_with_raw_comments(
+            raw, deployment_type="app", app_name="my-bot"
+        )
+        with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
+            gs.return_value.get = lambda key, default="": app_name if key == "GITHUB.APP_NAME" else default
+            out = provider.get_bot_review_comments()
+        assert [c["id"] for c in out] == [1]
+
+    def test_user_deployment_populates_user_id_lazily(self):
+        raw = [
+            {"id": 5, "body": "bot", "user": {"login": "pr-agent-bot"}, "path": "x.py",
+             "line": 3, "start_line": None},
+            {"id": 6, "body": "not bot", "user": {"login": "someone-else"}, "path": "x.py",
+             "line": 4, "start_line": None},
+        ]
+        provider, _ = self._make_provider_with_raw_comments(
+            raw, deployment_type="user", user_id=None
+        )
+        provider.get_user_id = MagicMock(return_value="pr-agent-bot")
+        with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
+            gs.return_value.get = lambda key, default="": default
+            out = provider.get_bot_review_comments()
+        assert [c["id"] for c in out] == [5]
+        provider.get_user_id.assert_called_once()
