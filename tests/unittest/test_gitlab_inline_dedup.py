@@ -4,8 +4,6 @@ get_bot_review_comments, and edit_review_comment.
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from pr_agent.algo.inline_comments_dedup import (
     MARKER_PREFIX,
     MARKER_SUFFIX,

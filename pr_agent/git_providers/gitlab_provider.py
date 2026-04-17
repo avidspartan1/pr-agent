@@ -674,14 +674,16 @@ class GitLabProvider(GitProvider):
         On any exception, logs a warning and returns [].
         """
         try:
-            try:
-                self.gl.auth()
-            except Exception:
-                pass
+            if getattr(self.gl, "user", None) is None:
+                try:
+                    self.gl.auth()
+                except Exception:
+                    pass
             bot_username = getattr(getattr(self.gl, "user", None), "username", None)
             if not bot_username:
                 get_logger().warning("get_bot_review_comments: could not determine bot username")
                 return []
+            bot_username = bot_username.lower()
 
             out = []
             for discussion in self.mr.discussions.list(get_all=True):
@@ -690,7 +692,7 @@ class GitLabProvider(GitProvider):
                     # Only inline/diff notes
                     if note.get("type") != "DiffNote":
                         continue
-                    author_username = (note.get("author") or {}).get("username", "")
+                    author_username = ((note.get("author") or {}).get("username") or "").lower()
                     if author_username != bot_username:
                         continue
                     position = note.get("position") or {}
