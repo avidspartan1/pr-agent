@@ -17,6 +17,17 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.inline_comments_dedup import (
+    MARKER_PREFIX,
+    MARKER_SUFFIX,
+    PERSISTENT_MODE_OFF,
+    PERSISTENT_MODE_SKIP,
+    PERSISTENT_MODE_UPDATE,
+    append_marker,
+    build_marker_index,
+    generate_marker,
+    normalize_persistent_mode,
+)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
@@ -548,30 +559,113 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to fix inline comment, error: {e}")
         return fixed_comments
 
+    def get_bot_review_comments(self) -> list[dict]:
+        """
+        Return the bot's existing inline review comments on this PR.
+
+        Filters by author to avoid matching human reviewers. Returns a list of
+        dicts with id, body, path, line, start_line (line fields may be None
+        for file-subject comments).
+        """
+        try:
+            our_app_name = (get_settings().get("GITHUB.APP_NAME", "") or "").lower()
+            headers, existing = self.pr._requester.requestJsonAndCheck(
+                "GET", f"{self.pr.url}/comments"
+            )
+            out = []
+            for c in existing or []:
+                login = ((c.get("user") or {}).get("login") or "").lower()
+                same_author = False
+                if self.deployment_type == "app":
+                    same_author = bool(our_app_name) and our_app_name in login
+                elif self.deployment_type == "user":
+                    same_author = bool(self.github_user_id) and login == str(self.github_user_id).lower()
+                if not same_author:
+                    continue
+                out.append({
+                    "id": c.get("id"),
+                    "body": c.get("body") or "",
+                    "path": c.get("path"),
+                    "line": c.get("line"),
+                    "start_line": c.get("start_line"),
+                })
+            return out
+        except Exception as e:
+            get_logger().warning(f"Failed to list GitHub review comments: {e}")
+            return []
+
+    def edit_review_comment(self, comment_id, body: str) -> bool:
+        try:
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            self.pr._requester.requestJsonAndCheck(
+                "PATCH",
+                f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}",
+                input={"body": body},
+            )
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to edit GitHub review comment {comment_id}: {e}")
+            return False
+
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         """
-        Publishes code suggestions as comments on the PR.
-        """
-        post_parameters_list = []
+        Publishes code suggestions as review comments on the PR.
 
+        When `pr_code_suggestions.persistent_inline_comments` is 'update' (default)
+        or 'skip', a stable marker is embedded in each body so subsequent runs
+        can recognize and update (or skip) the existing comment rather than
+        creating duplicates.
+        """
         code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions)
 
+        mode = normalize_persistent_mode(
+            get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
+        )
+
+        existing_index = {}
+        if mode != PERSISTENT_MODE_OFF:
+            try:
+                existing_index = build_marker_index(self.get_bot_review_comments())
+            except Exception as e:
+                get_logger().warning(f"persistent_inline_comments: fetch failed, falling back to create-new: {e}")
+                existing_index = {}
+
+        post_parameters_list = []
         for suggestion in code_suggestions_validated:
-            body = suggestion['body']
-            relevant_file = suggestion['relevant_file']
-            relevant_lines_start = suggestion['relevant_lines_start']
-            relevant_lines_end = suggestion['relevant_lines_end']
+            body = suggestion["body"]
+            relevant_file = suggestion["relevant_file"]
+            relevant_lines_start = suggestion["relevant_lines_start"]
+            relevant_lines_end = suggestion["relevant_lines_end"]
 
             if not relevant_lines_start or relevant_lines_start == -1:
                 get_logger().exception(
                     f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
                 continue
-
             if relevant_lines_end < relevant_lines_start:
-                get_logger().exception(f"Failed to publish code suggestion, "
-                                  f"relevant_lines_end is {relevant_lines_end} and "
-                                  f"relevant_lines_start is {relevant_lines_start}")
+                get_logger().exception(
+                    f"Failed to publish code suggestion, "
+                    f"relevant_lines_end is {relevant_lines_end} and "
+                    f"relevant_lines_start is {relevant_lines_start}")
                 continue
+
+            if mode != PERSISTENT_MODE_OFF:
+                marker = generate_marker(suggestion.get("original_suggestion") or {})
+                if marker:
+                    body = append_marker(body, marker)
+                    marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
+                    existing = existing_index.get(marker_hash)
+                    if existing is not None:
+                        if mode == PERSISTENT_MODE_SKIP:
+                            get_logger().info(
+                                f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
+                                f"on {relevant_file}; not re-posting")
+                            continue
+                        # mode == update
+                        if self.edit_review_comment(existing.get("id"), body):
+                            continue
+                        get_logger().info(
+                            f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
+                            f"falling back to create-new")
 
             if relevant_lines_end > relevant_lines_start:
                 post_parameters = {
@@ -581,7 +675,7 @@ class GithubProvider(GitProvider):
                     "start_line": relevant_lines_start,
                     "start_side": "RIGHT",
                 }
-            else:  # API is different for single line comments
+            else:
                 post_parameters = {
                     "body": body,
                     "path": relevant_file,
@@ -589,6 +683,9 @@ class GithubProvider(GitProvider):
                     "side": "RIGHT",
                 }
             post_parameters_list.append(post_parameters)
+
+        if not post_parameters_list:
+            return True
 
         try:
             self.publish_inline_comments(post_parameters_list)
