@@ -305,6 +305,10 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
         <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one. Default is true.</td>
       </tr>
       <tr>
+        <td><b>persistent_inline_comments</b></td>
+        <td>Controls how inline suggestions are deduplicated across re-runs on the same PR/MR. <code>"update"</code> (default) edits the matching existing inline comment in place; <code>"skip"</code> leaves the existing one untouched; <code>"off"</code> always posts a new inline comment (legacy behavior). Dedup is by a content-derived hash stored in a hidden marker, so it is stable across line-number changes.</td>
+      </tr>
+      <tr>
         <td><b>suggestions_score_threshold</b></td>
         <td> Any suggestion with importance score less than this threshold will be removed. Default is 0. Highly recommend not to set this value above 7-8, since above it may clip relevant suggestions that can be useful. </td>
       </tr>

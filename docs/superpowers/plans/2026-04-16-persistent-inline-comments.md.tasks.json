@@ -24,17 +24,17 @@
     {
       "id": 3,
       "subject": "Task 3: GitLab dedup implementation with tests",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 1],
       "description": "**Goal:** Implement get_bot_review_comments, edit_review_comment and dedup-aware publish_code_suggestions on GitLabProvider.\n\n**Files:**\n- Modify: `pr_agent/git_providers/gitlab_provider.py`\n- Create: `tests/unittest/test_gitlab_inline_dedup.py`\n\n**Verify:** `pytest tests/unittest/test_gitlab_inline_dedup.py -v`\n\n```json:metadata\n{\"files\": [\"pr_agent/git_providers/gitlab_provider.py\", \"tests/unittest/test_gitlab_inline_dedup.py\"], \"verifyCommand\": \"pytest tests/unittest/test_gitlab_inline_dedup.py -v\", \"acceptanceCriteria\": [\"GitLabProvider methods implemented\", \"publish_code_suggestions dedup-aware\", \"tests cover all modes & failures\"]}\n```"
     },
     {
       "id": 4,
       "subject": "Task 4: Document persistent_inline_comments setting",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Add persistent_inline_comments row to /improve tool docs.\n\n**Files:**\n- Modify: `docs/docs/tools/improve.md`\n\n**Verify:** `grep -n persistent_inline_comments docs/docs/tools/improve.md`\n\n```json:metadata\n{\"files\": [\"docs/docs/tools/improve.md\"], \"verifyCommand\": \"grep -n persistent_inline_comments docs/docs/tools/improve.md\", \"acceptanceCriteria\": [\"new doc row added\"]}\n```"
     }
   ],
-  "lastUpdated": "2026-04-16T12:00:00Z"
+  "lastUpdated": "2026-04-17T14:45:00Z"
 }
