@@ -14,6 +14,16 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
+from ..algo.inline_comments_dedup import (
+    MARKER_PREFIX,
+    MARKER_SUFFIX,
+    PERSISTENT_MODE_OFF,
+    PERSISTENT_MODE_SKIP,
+    append_marker,
+    build_marker_index,
+    generate_marker,
+    normalize_persistent_mode,
+)
 from ..algo.language_handler import is_valid_file
 from ..algo.utils import (clip_tokens,
                           find_line_number_of_relevant_line_in_file,
@@ -654,7 +664,86 @@ class GitLabProvider(GitProvider):
                 f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to last diff.')
         return self.last_diff  # fallback to last_diff if no relevant diff is found
 
+    def get_bot_review_comments(self) -> list[dict]:
+        """
+        Return the bot's existing inline review comments on this MR.
+
+        Iterates MR discussions and collects DiffNote-type notes authored by the
+        authenticated bot user. Returns a list of dicts with:
+          id, body, path, line, start_line, discussion_id.
+        On any exception, logs a warning and returns [].
+        """
+        try:
+            try:
+                self.gl.auth()
+            except Exception:
+                pass
+            bot_username = getattr(getattr(self.gl, "user", None), "username", None)
+            if not bot_username:
+                get_logger().warning("get_bot_review_comments: could not determine bot username")
+                return []
+
+            out = []
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get("notes") or []
+                for note in notes:
+                    # Only inline/diff notes
+                    if note.get("type") != "DiffNote":
+                        continue
+                    author_username = (note.get("author") or {}).get("username", "")
+                    if author_username != bot_username:
+                        continue
+                    position = note.get("position") or {}
+                    line_range = position.get("line_range") or {}
+                    start_line = None
+                    if line_range:
+                        start = line_range.get("start") or {}
+                        start_line = start.get("new_line")
+                    out.append({
+                        "id": note.get("id"),
+                        "body": note.get("body") or "",
+                        "path": position.get("new_path"),
+                        "line": position.get("new_line"),
+                        "start_line": start_line,
+                        "discussion_id": discussion.id,
+                    })
+            return out
+        except Exception as e:
+            get_logger().warning(f"Failed to list GitLab review comments: {e}")
+            return []
+
+    def edit_review_comment(self, comment_id, body: str) -> bool:
+        """
+        Edit an existing MR note by id.
+
+        Uses self.mr.notes.get(comment_id) and saves the updated body.
+        Returns True on success, False with a warning log on failure.
+        """
+        try:
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            note = self.mr.notes.get(comment_id)
+            note.body = body
+            note.save()
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to edit GitLab review comment {comment_id}: {e}")
+            return False
+
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        mode = normalize_persistent_mode(
+            get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
+        )
+
+        existing_index = {}
+        if mode != PERSISTENT_MODE_OFF:
+            try:
+                existing_index = build_marker_index(self.get_bot_review_comments())
+            except Exception as e:
+                get_logger().warning(
+                    f"persistent_inline_comments: fetch failed, falling back to create-new: {e}"
+                )
+                existing_index = {}
+
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -665,6 +754,27 @@ class GitLabProvider(GitProvider):
                 relevant_file = suggestion['relevant_file']
                 relevant_lines_start = suggestion['relevant_lines_start']
                 relevant_lines_end = suggestion['relevant_lines_end']
+
+                if mode != PERSISTENT_MODE_OFF:
+                    marker = generate_marker(suggestion.get("original_suggestion") or {})
+                    if marker:
+                        body = append_marker(body, marker)
+                        marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
+                        existing = existing_index.get(marker_hash)
+                        if existing is not None:
+                            if mode == PERSISTENT_MODE_SKIP:
+                                get_logger().info(
+                                    f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
+                                    f"on {relevant_file}; not re-posting"
+                                )
+                                continue
+                            # mode == update
+                            if self.edit_review_comment(existing.get("id"), body):
+                                continue
+                            get_logger().info(
+                                f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
+                                f"falling back to create-new"
+                            )
 
                 diff_files = self.get_diff_files()
                 target_file = None
