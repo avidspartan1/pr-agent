@@ -17,6 +17,15 @@ from typing import Any, Optional
 MARKER_PREFIX = "<!-- pr-agent-inline-id:"
 MARKER_SUFFIX = " -->"
 
+# Constants used by the resolve-outdated-inline-comments feature.
+# RESOLVED_BODY_MARKER is appended (with RESOLVED_NOTE) to the body of an
+# inline comment whose suggestion was not re-emitted on the current run.
+# It also serves as an idempotency signal: if a user manually unresolves a
+# thread we previously auto-resolved, the marker remains in the body and
+# tells us not to re-resolve on subsequent runs.
+RESOLVED_NOTE = "Resolved automatically: this suggestion was not re-emitted on the latest run."
+RESOLVED_BODY_MARKER = "<!-- pr-agent-inline-resolved -->"
+
 PERSISTENT_MODE_OFF = "off"
 PERSISTENT_MODE_UPDATE = "update"
 PERSISTENT_MODE_SKIP = "skip"

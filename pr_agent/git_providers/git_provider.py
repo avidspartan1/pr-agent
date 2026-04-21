@@ -359,6 +359,27 @@ class GitProvider(ABC):
         """
         return False
 
+    def resolve_review_thread(self, comment: dict) -> bool:
+        """
+        Mark the review thread containing `comment` as resolved.
+
+        `comment` is one of the dicts returned by get_bot_review_comments();
+        providers extract whichever id (thread_id, discussion_id, etc.) they need.
+
+        Returns True on success, False otherwise. Default: return False (unsupported),
+        which causes the resolve-outdated pass to skip this comment.
+        """
+        return False
+
+    def unresolve_review_thread(self, comment: dict) -> bool:
+        """
+        Mark the review thread containing `comment` as unresolved.
+
+        Used when a previously auto-resolved suggestion is re-emitted on a later run.
+        Returns True on success, False otherwise. Default: return False (unsupported).
+        """
+        return False
+
     @abstractmethod
     def remove_initial_comment(self):
         pass
