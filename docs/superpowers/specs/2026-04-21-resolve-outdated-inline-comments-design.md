@@ -303,7 +303,7 @@ None new. The algo module gains only two string constants (`RESOLVED_NOTE`, `RES
 | `edit_review_comment` returns `False` after a successful resolve | Log. Thread is resolved but lacks the explanatory note. UI clearly shows resolved state. Acceptable. |
 | `unresolve_review_thread` returns `False` (re-emit case) | Log. Body is freshly edited via dedup; thread stays resolved. Mildly confusing UI but content is current. |
 | GraphQL `errors` array (GitHub) | Treated as failure: fetch returns `[]`; mutations return `False`. |
-| Setting absent or non-bool | `get(..., True)` defaults to enabled, matching `configuration.toml`. |
+| Setting absent | `get(..., True)` defaults to enabled, matching `configuration.toml`. (Misconfigured non-bool values follow normal Python truthiness; user-visible outcome makes this self-correcting.) |
 
 The outdated pass inherits the dedup layer's silent-fail posture: it never blocks publishing.
 
