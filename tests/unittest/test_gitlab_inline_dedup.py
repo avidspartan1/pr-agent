@@ -459,6 +459,24 @@ class TestGitLabResolveUnresolve:
         p.mr.discussions.get = MagicMock(side_effect=RuntimeError("api down"))
         assert p.resolve_review_thread({"thread_id": "DIS123"}) is False
 
+    def test_resolve_returns_false_when_save_raises(self):
+        """resolve_review_thread returns False and logs a warning when save() raises."""
+        p = self._provider()
+        d = MagicMock()
+        d.resolvable = True
+        d.resolved = False
+        d.save.side_effect = RuntimeError("save failed")
+        p.mr.discussions.get = MagicMock(return_value=d)
+
+        import logging
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            mock_log = MagicMock()
+            mock_logger.return_value = mock_log
+            result = p.resolve_review_thread({"thread_id": "DIS123"})
+
+        assert result is False
+        mock_log.warning.assert_called_once()
+
     def test_resolve_returns_false_when_thread_id_missing(self):
         p = self._provider()
         p.mr.discussions.get = MagicMock()
@@ -467,38 +485,59 @@ class TestGitLabResolveUnresolve:
 
 
 class TestGetBotReviewCommentsIncludesIsResolved:
-    def test_is_resolved_propagates_from_discussion(self):
+    def _make_provider(self):
         from pr_agent.git_providers.gitlab_provider import GitLabProvider
         p = GitLabProvider.__new__(GitLabProvider)
         p.gl = MagicMock()
         p.gl.user.username = "pr-agent-bot"
+        p.mr = MagicMock()
+        return p
+
+    def _note(self, note_id, resolved=False):
+        return {
+            "type": "DiffNote",
+            "id": note_id,
+            "body": "x",
+            "author": {"username": "pr-agent-bot"},
+            "position": {"new_path": "a.py", "new_line": 5},
+            "resolved": resolved,
+        }
+
+    def test_is_resolved_propagates_from_discussion(self):
+        p = self._make_provider()
         d_resolved = MagicMock()
         d_resolved.id = "D-1"
-        d_resolved.attributes = {
-            "notes": [{
-                "type": "DiffNote",
-                "id": 1,
-                "body": "x",
-                "author": {"username": "pr-agent-bot"},
-                "position": {"new_path": "a.py", "new_line": 5},
-                "resolved": True,
-            }]
-        }
+        d_resolved.resolved = True   # top-level signal
+        d_resolved.attributes = {"notes": [self._note(1, resolved=True)]}
         d_unresolved = MagicMock()
         d_unresolved.id = "D-2"
-        d_unresolved.attributes = {
-            "notes": [{
-                "type": "DiffNote",
-                "id": 2,
-                "body": "y",
-                "author": {"username": "pr-agent-bot"},
-                "position": {"new_path": "b.py", "new_line": 6},
-                "resolved": False,
-            }]
-        }
-        p.mr = MagicMock()
+        d_unresolved.resolved = False  # top-level signal
+        d_unresolved.attributes = {"notes": [self._note(2, resolved=False)]}
         p.mr.discussions.list = MagicMock(return_value=[d_resolved, d_unresolved])
         out = p.get_bot_review_comments()
         ids_to_resolved = {c["id"]: c["is_resolved"] for c in out}
         assert ids_to_resolved == {1: True, 2: False}
         assert all("thread_id" in c for c in out)
+
+    def test_top_level_resolved_wins_over_note_resolved(self):
+        """Top-level discussion.resolved=True takes precedence over first-note resolved=False."""
+        p = self._make_provider()
+        d = MagicMock()
+        d.id = "D-1"
+        d.resolved = True  # top-level says resolved
+        d.attributes = {"notes": [self._note(1, resolved=False)]}  # note says not resolved
+        p.mr.discussions.list = MagicMock(return_value=[d])
+        out = p.get_bot_review_comments()
+        assert len(out) == 1
+        assert out[0]["is_resolved"] is True
+
+    def test_fallback_to_note_resolved_when_top_level_absent(self):
+        """When discussion has no top-level resolved attribute, first-note resolved is used."""
+        p = self._make_provider()
+        d = MagicMock(spec=["id", "attributes"])  # no .resolved attribute
+        d.id = "D-1"
+        d.attributes = {"notes": [self._note(1, resolved=True)]}
+        p.mr.discussions.list = MagicMock(return_value=[d])
+        out = p.get_bot_review_comments()
+        assert len(out) == 1
+        assert out[0]["is_resolved"] is True

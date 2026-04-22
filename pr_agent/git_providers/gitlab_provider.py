@@ -670,7 +670,7 @@ class GitLabProvider(GitProvider):
 
         Iterates MR discussions and collects DiffNote-type notes authored by the
         authenticated bot user. Returns a list of dicts with:
-          id, body, path, line, start_line, discussion_id.
+          id, body, path, line, start_line, thread_id, discussion_id, is_resolved.
         On any exception, logs a warning and returns [].
         """
         try:
@@ -701,6 +701,10 @@ class GitLabProvider(GitProvider):
                     if line_range:
                         start = line_range.get("start") or {}
                         start_line = start.get("new_line")
+                    notes = discussion.attributes.get("notes") or [{}]
+                    is_resolved = getattr(discussion, "resolved", None)
+                    if is_resolved is None:
+                        is_resolved = notes[0].get("resolved", False)
                     out.append({
                         "id": note.get("id"),
                         "thread_id": discussion.id,
@@ -709,9 +713,7 @@ class GitLabProvider(GitProvider):
                         "path": position.get("new_path"),
                         "line": position.get("new_line"),
                         "start_line": start_line,
-                        "is_resolved": bool(
-                            (discussion.attributes.get("notes") or [{}])[0].get("resolved", False)
-                        ),
+                        "is_resolved": bool(is_resolved),
                     })
             return out
         except Exception as e:
@@ -741,7 +743,7 @@ class GitLabProvider(GitProvider):
             return False
         try:
             d = self.mr.discussions.get(thread_id)
-            if not getattr(d, "resolvable", True):
+            if not getattr(d, "resolvable", True):  # fail-open: missing attr -> attempt
                 return False
             d.resolved = resolved
             d.save()
