@@ -239,6 +239,22 @@ class TestGetBotReviewCommentsGraphQL:
         assert [c["id"] for c in out] == [1, 2]
         assert provider.pr._requester.requestJsonAndCheck.call_count == 2
 
+    def test_pagination_breaks_when_end_cursor_missing_despite_has_next_page(self):
+        # Guard against a malformed server response (hasNextPage=True but no
+        # endCursor) infinite-looping by re-issuing the first-page query.
+        provider = self._make_provider(deployment_type="user", user_id="pr-agent-bot")
+        provider.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=self._gql_response(
+                [self._thread("T1", False, [self._comment(1, "pr-agent-bot")])],
+                has_next_page=True, end_cursor=None,
+            )
+        )
+        with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
+            gs.return_value.get = lambda key, default="": default
+            out = provider.get_bot_review_comments()
+        assert [c["id"] for c in out] == [1]
+        assert provider.pr._requester.requestJsonAndCheck.call_count == 1
+
     def test_graphql_errors_array_returns_empty(self):
         provider = self._make_provider(deployment_type="user", user_id="pr-agent-bot")
         provider.pr._requester.requestJsonAndCheck = MagicMock(

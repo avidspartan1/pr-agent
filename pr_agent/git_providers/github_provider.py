@@ -639,9 +639,9 @@ class GithubProvider(GitProvider):
                             "start_line": c.get("startLine"),
                             "is_resolved": is_resolved,
                         })
-                if not page_info.get("hasNextPage"):
-                    break
                 cursor = page_info.get("endCursor")
+                if not page_info.get("hasNextPage") or not cursor:
+                    break
             return out
         except Exception as e:
             get_logger().warning(f"Failed to list GitHub review comments via GraphQL: {e}")
