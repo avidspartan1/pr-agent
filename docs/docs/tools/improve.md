@@ -309,6 +309,10 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
         <td>Controls how inline suggestions are deduplicated across re-runs on the same PR/MR. <code>"update"</code> (default) edits the matching existing inline comment in place; <code>"skip"</code> leaves the existing one untouched; <code>"off"</code> always posts a new inline comment (legacy behavior). Dedup is by a content-derived hash stored in a hidden marker, so it is stable across line-number changes.</td>
       </tr>
       <tr>
+        <td><b>resolve_outdated_inline_comments</b></td>
+        <td>When dedup is enabled (<code>persistent_inline_comments != "off"</code>), automatically resolve inline-comment threads whose suggestion was not re-emitted on the latest run; the thread body gets a short auto-resolve note. Default is true. Has no effect when <code>persistent_inline_comments = "off"</code>. Reviewers can manually unresolve an auto-resolved thread to opt it out of future auto-resolution &mdash; the bot detects the prior resolution marker in the body and respects it.</td>
+      </tr>
+      <tr>
         <td><b>suggestions_score_threshold</b></td>
         <td> Any suggestion with importance score less than this threshold will be removed. Default is 0. Highly recommend not to set this value above 7-8, since above it may clip relevant suggestions that can be useful. </td>
       </tr>
