@@ -558,40 +558,93 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to fix inline comment, error: {e}")
         return fixed_comments
 
+    _BOT_REVIEW_COMMENTS_QUERY = """
+    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          reviewThreads(first:100, after:$cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              isResolved
+              comments(first:100) {
+                nodes {
+                  databaseId
+                  body
+                  path
+                  line
+                  startLine
+                  author { login }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
     def get_bot_review_comments(self) -> list[dict]:
         """
         Return the bot's existing inline review comments on this PR.
 
-        Filters by author to avoid matching human reviewers. Returns a list of
-        dicts with id, body, path, line, start_line (line fields may be None
-        for file-subject comments).
+        Uses GraphQL to expose per-thread resolution state and the thread node id
+        (needed by resolve_review_thread / unresolve_review_thread). Filters by
+        author to avoid matching human reviewers. Returns dicts with keys:
+        id, thread_id, body, path, line, start_line, is_resolved.
         """
         try:
             our_app_name = (get_settings().get("GITHUB.APP_NAME", "") or "").lower()
             bot_user_id = (self.get_user_id() or "").lower() if self.deployment_type == "user" else ""
-            headers, existing = self.pr._requester.requestJsonAndCheck(
-                "GET", f"{self.pr.url}/comments"
-            )
-            out = []
-            for c in existing or []:
-                login = ((c.get("user") or {}).get("login") or "").lower()
-                same_author = False
-                if self.deployment_type == "app":
-                    same_author = bool(our_app_name) and our_app_name in login
-                elif self.deployment_type == "user":
-                    same_author = bool(bot_user_id) and login == bot_user_id
-                if not same_author:
-                    continue
-                out.append({
-                    "id": c.get("id"),
-                    "body": c.get("body") or "",
-                    "path": c.get("path"),
-                    "line": c.get("line"),
-                    "start_line": c.get("start_line"),
-                })
+            owner, _, name = self.repo.partition("/")
+            number = self.pr.number
+
+            out: list[dict] = []
+            cursor: str | None = None
+            while True:
+                _, data = self.pr._requester.requestJsonAndCheck(
+                    "POST",
+                    f"{self.base_url}/graphql",
+                    input={
+                        "query": self._BOT_REVIEW_COMMENTS_QUERY,
+                        "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor},
+                    },
+                )
+                if not data or data.get("errors"):
+                    get_logger().warning(
+                        f"get_bot_review_comments GraphQL errors: {(data or {}).get('errors')}"
+                    )
+                    return []
+                threads = (((data.get("data") or {}).get("repository") or {})
+                           .get("pullRequest") or {}).get("reviewThreads") or {}
+                page_info = threads.get("pageInfo") or {}
+                for t in threads.get("nodes") or []:
+                    thread_id = t.get("id")
+                    is_resolved = bool(t.get("isResolved"))
+                    for c in ((t.get("comments") or {}).get("nodes") or []):
+                        login = ((c.get("author") or {}).get("login") or "").lower()
+                        same_author = False
+                        if self.deployment_type == "app":
+                            same_author = bool(our_app_name) and our_app_name in login
+                        elif self.deployment_type == "user":
+                            same_author = bool(bot_user_id) and login == bot_user_id
+                        if not same_author:
+                            continue
+                        out.append({
+                            "id": c.get("databaseId"),
+                            "thread_id": thread_id,
+                            "body": c.get("body") or "",
+                            "path": c.get("path"),
+                            "line": c.get("line"),
+                            "start_line": c.get("startLine"),
+                            "is_resolved": is_resolved,
+                        })
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
             return out
         except Exception as e:
-            get_logger().warning(f"Failed to list GitHub review comments: {e}")
+            get_logger().warning(f"Failed to list GitHub review comments via GraphQL: {e}")
             return []
 
     def edit_review_comment(self, comment_id, body: str) -> bool:
@@ -606,6 +659,44 @@ class GithubProvider(GitProvider):
         except Exception as e:
             get_logger().warning(f"Failed to edit GitHub review comment {comment_id}: {e}")
             return False
+
+    _RESOLVE_THREAD_MUTATION = """
+    mutation($threadId:ID!) {
+      resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
+    }
+    """
+
+    _UNRESOLVE_THREAD_MUTATION = """
+    mutation($threadId:ID!) {
+      unresolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
+    }
+    """
+
+    def _run_thread_mutation(self, query: str, comment: dict) -> bool:
+        thread_id = comment.get("thread_id")
+        if not thread_id:
+            return False
+        try:
+            _, data = self.pr._requester.requestJsonAndCheck(
+                "POST",
+                f"{self.base_url}/graphql",
+                input={"query": query, "variables": {"threadId": thread_id}},
+            )
+            if not data or data.get("errors"):
+                get_logger().warning(
+                    f"GitHub thread mutation errors for {thread_id}: {(data or {}).get('errors')}"
+                )
+                return False
+            return True
+        except Exception as e:
+            get_logger().warning(f"GitHub thread mutation failed for {thread_id}: {e}")
+            return False
+
+    def resolve_review_thread(self, comment: dict) -> bool:
+        return self._run_thread_mutation(self._RESOLVE_THREAD_MUTATION, comment)
+
+    def unresolve_review_thread(self, comment: dict) -> bool:
+        return self._run_thread_mutation(self._UNRESOLVE_THREAD_MUTATION, comment)
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         """

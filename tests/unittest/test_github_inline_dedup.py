@@ -153,50 +153,161 @@ class TestSkipMode:
         provider.pr.create_review.assert_called_once()
 
 
-class TestGetBotReviewCommentsFiltering:
-    """Exercises the real get_bot_review_comments filter — not the mocked-out fixture one."""
+class TestGetBotReviewCommentsGraphQL:
+    """Exercises the GraphQL-backed get_bot_review_comments."""
 
-    def _make_provider_with_raw_comments(self, raw, deployment_type, user_id=None, app_name=""):
+    def _make_provider(self, deployment_type, user_id=None):
         with patch("pr_agent.git_providers.github_provider.GithubProvider._get_repo"), \
              patch("pr_agent.git_providers.github_provider.GithubProvider.set_pr"), \
              patch("pr_agent.git_providers.github_provider.GithubProvider._get_pr"):
             from pr_agent.git_providers.github_provider import GithubProvider
             p = GithubProvider.__new__(GithubProvider)
             p.pr = MagicMock()
-            p.pr.url = "https://api.github.com/repos/owner/repo/pulls/1"
-            p.pr._requester.requestJsonAndCheck = MagicMock(return_value=({}, raw))
+            p.pr.number = 42
+            p.repo = "owner/repo"
+            p.base_url = "https://api.github.com"
             p.deployment_type = deployment_type
             p.github_user_id = user_id
-            return p, app_name
+            return p
+
+    def _gql_response(self, threads, has_next_page=False, end_cursor=None):
+        return ({}, {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+                            "nodes": threads,
+                        }
+                    }
+                }
+            }
+        })
+
+    def _thread(self, thread_id, is_resolved, comments):
+        return {"id": thread_id, "isResolved": is_resolved, "comments": {"nodes": comments}}
+
+    def _comment(self, db_id, login, body="x", path="a.py", line=1, start_line=None):
+        return {"databaseId": db_id, "body": body, "path": path, "line": line,
+                "startLine": start_line, "author": {"login": login}}
 
     def test_app_deployment_filters_by_app_name(self):
-        raw = [
-            {"id": 1, "body": "bot one", "user": {"login": "my-bot[bot]"}, "path": "a.py",
-             "line": 1, "start_line": None},
-            {"id": 2, "body": "human one", "user": {"login": "alice"}, "path": "a.py",
-             "line": 2, "start_line": None},
-        ]
-        provider, app_name = self._make_provider_with_raw_comments(
-            raw, deployment_type="app", app_name="my-bot"
+        provider = self._make_provider(deployment_type="app")
+        provider.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=self._gql_response([
+                self._thread("T1", False, [self._comment(1, "my-bot[bot]")]),
+                self._thread("T2", False, [self._comment(2, "alice")]),
+            ])
         )
         with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
-            gs.return_value.get = lambda key, default="": app_name if key == "GITHUB.APP_NAME" else default
+            gs.return_value.get = lambda key, default="": "my-bot" if key == "GITHUB.APP_NAME" else default
             out = provider.get_bot_review_comments()
         assert [c["id"] for c in out] == [1]
+        assert out[0]["thread_id"] == "T1"
+        assert out[0]["is_resolved"] is False
 
-    def test_user_deployment_populates_user_id_lazily(self):
-        raw = [
-            {"id": 5, "body": "bot", "user": {"login": "pr-agent-bot"}, "path": "x.py",
-             "line": 3, "start_line": None},
-            {"id": 6, "body": "not bot", "user": {"login": "someone-else"}, "path": "x.py",
-             "line": 4, "start_line": None},
-        ]
-        provider, _ = self._make_provider_with_raw_comments(
-            raw, deployment_type="user", user_id=None
-        )
+    def test_user_deployment_filters_by_user_id(self):
+        provider = self._make_provider(deployment_type="user", user_id=None)
         provider.get_user_id = MagicMock(return_value="pr-agent-bot")
+        provider.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=self._gql_response([
+                self._thread("T1", True, [self._comment(5, "pr-agent-bot")]),
+                self._thread("T2", False, [self._comment(6, "someone-else")]),
+            ])
+        )
         with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
             gs.return_value.get = lambda key, default="": default
             out = provider.get_bot_review_comments()
         assert [c["id"] for c in out] == [5]
+        assert out[0]["is_resolved"] is True
         provider.get_user_id.assert_called_once()
+
+    def test_paginates_until_has_next_page_false(self):
+        provider = self._make_provider(deployment_type="user", user_id="pr-agent-bot")
+        page1 = self._gql_response(
+            [self._thread("T1", False, [self._comment(1, "pr-agent-bot")])],
+            has_next_page=True, end_cursor="cur1",
+        )
+        page2 = self._gql_response(
+            [self._thread("T2", False, [self._comment(2, "pr-agent-bot")])],
+            has_next_page=False, end_cursor=None,
+        )
+        provider.pr._requester.requestJsonAndCheck = MagicMock(side_effect=[page1, page2])
+        with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
+            gs.return_value.get = lambda key, default="": default
+            out = provider.get_bot_review_comments()
+        assert [c["id"] for c in out] == [1, 2]
+        assert provider.pr._requester.requestJsonAndCheck.call_count == 2
+
+    def test_graphql_errors_array_returns_empty(self):
+        provider = self._make_provider(deployment_type="user", user_id="pr-agent-bot")
+        provider.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=({}, {"errors": [{"message": "boom"}]})
+        )
+        with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
+            gs.return_value.get = lambda key, default="": default
+            out = provider.get_bot_review_comments()
+        assert out == []
+
+    def test_graphql_exception_returns_empty(self):
+        provider = self._make_provider(deployment_type="user", user_id="pr-agent-bot")
+        provider.pr._requester.requestJsonAndCheck = MagicMock(side_effect=RuntimeError("net"))
+        with patch("pr_agent.git_providers.github_provider.get_settings") as gs:
+            gs.return_value.get = lambda key, default="": default
+            out = provider.get_bot_review_comments()
+        assert out == []
+
+
+class TestGitHubResolveUnresolve:
+    """Exercises resolve_review_thread / unresolve_review_thread mutations."""
+
+    def _make_provider(self):
+        with patch("pr_agent.git_providers.github_provider.GithubProvider._get_repo"), \
+             patch("pr_agent.git_providers.github_provider.GithubProvider.set_pr"), \
+             patch("pr_agent.git_providers.github_provider.GithubProvider._get_pr"):
+            from pr_agent.git_providers.github_provider import GithubProvider
+            p = GithubProvider.__new__(GithubProvider)
+            p.pr = MagicMock()
+            p.base_url = "https://api.github.com"
+            return p
+
+    def test_resolve_calls_graphql_and_returns_true(self):
+        p = self._make_provider()
+        p.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=({}, {"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}})
+        )
+        assert p.resolve_review_thread({"thread_id": "T1"}) is True
+        method, url = p.pr._requester.requestJsonAndCheck.call_args[0]
+        assert method == "POST"
+        assert url.endswith("/graphql")
+        payload = p.pr._requester.requestJsonAndCheck.call_args.kwargs["input"]
+        assert "resolveReviewThread" in payload["query"]
+        assert payload["variables"] == {"threadId": "T1"}
+
+    def test_unresolve_calls_graphql_and_returns_true(self):
+        p = self._make_provider()
+        p.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=({}, {"data": {"unresolveReviewThread": {"thread": {"isResolved": False}}}})
+        )
+        assert p.unresolve_review_thread({"thread_id": "T1"}) is True
+        payload = p.pr._requester.requestJsonAndCheck.call_args.kwargs["input"]
+        assert "unresolveReviewThread" in payload["query"]
+        assert payload["variables"] == {"threadId": "T1"}
+
+    def test_resolve_returns_false_on_errors_array(self):
+        p = self._make_provider()
+        p.pr._requester.requestJsonAndCheck = MagicMock(
+            return_value=({}, {"errors": [{"message": "perm denied"}]})
+        )
+        assert p.resolve_review_thread({"thread_id": "T1"}) is False
+
+    def test_resolve_returns_false_on_exception(self):
+        p = self._make_provider()
+        p.pr._requester.requestJsonAndCheck = MagicMock(side_effect=RuntimeError("net"))
+        assert p.resolve_review_thread({"thread_id": "T1"}) is False
+
+    def test_resolve_returns_false_when_thread_id_missing(self):
+        p = self._make_provider()
+        p.pr._requester.requestJsonAndCheck = MagicMock()
+        assert p.resolve_review_thread({"id": 5}) is False
+        p.pr._requester.requestJsonAndCheck.assert_not_called()
