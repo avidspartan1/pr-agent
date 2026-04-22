@@ -22,6 +22,8 @@ from ..algo.inline_comments_dedup import (
     MARKER_SUFFIX,
     PERSISTENT_MODE_OFF,
     PERSISTENT_MODE_SKIP,
+    RESOLVED_BODY_MARKER,
+    RESOLVED_NOTE,
     append_marker,
     build_marker_index,
     generate_marker,
@@ -712,8 +714,11 @@ class GithubProvider(GitProvider):
         mode = normalize_persistent_mode(
             get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
         )
+        resolve_outdated = bool(
+            get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True)
+        )
 
-        existing_index = {}
+        existing_index: dict[str, dict] = {}
         if mode != PERSISTENT_MODE_OFF:
             try:
                 existing_index = build_marker_index(self.get_bot_review_comments())
@@ -721,6 +726,7 @@ class GithubProvider(GitProvider):
                 get_logger().warning(f"persistent_inline_comments: fetch failed, falling back to create-new: {e}")
                 existing_index = {}
 
+        emitted_hashes: set[str] = set()
         post_parameters_list = []
         for suggestion in code_suggestions_validated:
             body = suggestion["body"]
@@ -744,6 +750,7 @@ class GithubProvider(GitProvider):
                 if marker:
                     body = append_marker(body, marker)
                     marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
+                    emitted_hashes.add(marker_hash)
                     existing = existing_index.get(marker_hash)
                     if existing is not None:
                         if mode == PERSISTENT_MODE_SKIP:
@@ -753,6 +760,10 @@ class GithubProvider(GitProvider):
                             continue
                         # mode == update
                         if self.edit_review_comment(existing.get("id"), body):
+                            # If we previously auto-resolved this thread but the
+                            # suggestion is back, unresolve it.
+                            if resolve_outdated and existing.get("is_resolved"):
+                                self.unresolve_review_thread(existing)
                             continue
                         get_logger().info(
                             f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
@@ -774,6 +785,23 @@ class GithubProvider(GitProvider):
                     "side": "RIGHT",
                 }
             post_parameters_list.append(post_parameters)
+
+        # ---- Outdated pass: resolve threads whose marker is no longer emitted ----
+        if mode != PERSISTENT_MODE_OFF and resolve_outdated:
+            for h, c in existing_index.items():
+                if h in emitted_hashes:
+                    continue
+                if c.get("is_resolved"):
+                    continue
+                if RESOLVED_BODY_MARKER in (c.get("body") or ""):
+                    continue
+                if not self.resolve_review_thread(c):
+                    continue
+                new_body = (
+                    (c.get("body") or "").rstrip()
+                    + f"\n\n---\n_{RESOLVED_NOTE}_\n{RESOLVED_BODY_MARKER}"
+                )
+                self.edit_review_comment(c.get("id"), new_body)
 
         if not post_parameters_list:
             return True

@@ -46,14 +46,23 @@ def provider():
         return p
 
 
-def _set_mode(mode):
+def _set_settings(persistent_mode="update", resolve_outdated=True):
+    """Patch get_settings to return both persistent_inline_comments and resolve_outdated_inline_comments."""
+    values = {
+        "persistent_inline_comments": persistent_mode,
+        "resolve_outdated_inline_comments": resolve_outdated,
+    }
     return patch(
         "pr_agent.git_providers.github_provider.get_settings",
         return_value=MagicMock(
-            pr_code_suggestions=MagicMock(get=lambda key, default=None:
-                mode if key == "persistent_inline_comments" else default),
+            pr_code_suggestions=MagicMock(get=lambda key, default=None: values.get(key, default)),
         ),
     )
+
+
+# Backward-compat wrapper for existing tests that only set persistent mode.
+def _set_mode(mode):
+    return _set_settings(persistent_mode=mode, resolve_outdated=False)
 
 
 class TestOffMode:
@@ -327,3 +336,133 @@ class TestGitHubResolveUnresolve:
         p.pr._requester.requestJsonAndCheck = MagicMock()
         assert p.resolve_review_thread({"id": 5}) is False
         p.pr._requester.requestJsonAndCheck.assert_not_called()
+
+
+from pr_agent.algo.inline_comments_dedup import RESOLVED_BODY_MARKER, RESOLVED_NOTE
+
+
+def _existing(c_id, marker, *, is_resolved=False, body_extra="", path="src/app.py", thread_id=None):
+    return {
+        "id": c_id,
+        "thread_id": thread_id or f"T{c_id}",
+        "body": "old body" + body_extra + "\n\n" + marker,
+        "path": path,
+        "line": 12,
+        "start_line": 10,
+        "is_resolved": is_resolved,
+    }
+
+
+class TestOutdatedPass:
+    def test_outdated_marker_resolves_and_edits(self, provider):
+        s_emitted = _sug(content="A new and different suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="An old suggestion that's no longer flagged")["original_suggestion"])
+        existing = _existing(c_id=777, marker=marker_outdated)
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock(return_value=True)
+        provider.resolve_review_thread = MagicMock(return_value=True)
+        provider.unresolve_review_thread = MagicMock()
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            provider.publish_code_suggestions([s_emitted])
+        provider.resolve_review_thread.assert_called_once()
+        called_comment = provider.resolve_review_thread.call_args[0][0]
+        assert called_comment["id"] == 777
+        # edit_review_comment called once for the resolution note
+        provider.edit_review_comment.assert_called_once()
+        called_id, called_body = provider.edit_review_comment.call_args[0]
+        assert called_id == 777
+        assert RESOLVED_NOTE in called_body
+        assert RESOLVED_BODY_MARKER in called_body
+        provider.pr.create_review.assert_called_once()  # for the new suggestion
+
+    def test_already_resolved_is_skipped(self, provider):
+        s_emitted = _sug(content="A new suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="Old")["original_suggestion"])
+        existing = _existing(c_id=778, marker=marker_outdated, is_resolved=True)
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock()
+        provider.resolve_review_thread = MagicMock()
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            provider.publish_code_suggestions([s_emitted])
+        provider.resolve_review_thread.assert_not_called()
+        # edit_review_comment must not be called for the outdated comment;
+        # there are no matched existing comments either, so total calls == 0.
+        provider.edit_review_comment.assert_not_called()
+
+    def test_body_marker_signals_user_unresolved_skip(self, provider):
+        s_emitted = _sug(content="A new suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="Old")["original_suggestion"])
+        existing = _existing(
+            c_id=779, marker=marker_outdated, is_resolved=False,
+            body_extra=f"\n\n---\n_{RESOLVED_NOTE}_\n{RESOLVED_BODY_MARKER}",
+        )
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock()
+        provider.resolve_review_thread = MagicMock()
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            provider.publish_code_suggestions([s_emitted])
+        provider.resolve_review_thread.assert_not_called()
+        provider.edit_review_comment.assert_not_called()
+
+    def test_re_emit_after_prior_resolve_calls_unresolve(self, provider):
+        s = _sug()
+        marker = generate_marker(s["original_suggestion"])
+        existing = _existing(c_id=780, marker=marker, is_resolved=True)
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock(return_value=True)
+        provider.resolve_review_thread = MagicMock()
+        provider.unresolve_review_thread = MagicMock(return_value=True)
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            provider.publish_code_suggestions([s])
+        provider.edit_review_comment.assert_called_once()
+        provider.unresolve_review_thread.assert_called_once()
+        provider.resolve_review_thread.assert_not_called()
+        provider.pr.create_review.assert_not_called()
+
+    def test_setting_off_skips_outdated_pass(self, provider):
+        s_emitted = _sug(content="A new suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="Old")["original_suggestion"])
+        existing = _existing(c_id=781, marker=marker_outdated)
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock()
+        provider.resolve_review_thread = MagicMock()
+        with _set_settings(persistent_mode="update", resolve_outdated=False):
+            provider.publish_code_suggestions([s_emitted])
+        provider.resolve_review_thread.assert_not_called()
+        provider.edit_review_comment.assert_not_called()
+
+    def test_persistent_off_skips_outdated_pass_even_when_setting_on(self, provider):
+        s = _sug()
+        provider.get_bot_review_comments = MagicMock()
+        provider.resolve_review_thread = MagicMock()
+        with _set_settings(persistent_mode="off", resolve_outdated=True):
+            provider.publish_code_suggestions([s])
+        provider.get_bot_review_comments.assert_not_called()
+        provider.resolve_review_thread.assert_not_called()
+
+    def test_resolve_failure_skips_edit(self, provider):
+        s_emitted = _sug(content="A new suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="Old")["original_suggestion"])
+        existing = _existing(c_id=782, marker=marker_outdated)
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock()
+        provider.resolve_review_thread = MagicMock(return_value=False)
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            provider.publish_code_suggestions([s_emitted])
+        provider.resolve_review_thread.assert_called_once()
+        # The resolution-note edit must not happen for this outdated comment.
+        # No other edit calls expected (the emitted suggestion creates new).
+        provider.edit_review_comment.assert_not_called()
+
+    def test_edit_failure_after_resolve_does_not_raise(self, provider):
+        s_emitted = _sug(content="A new suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="Old")["original_suggestion"])
+        existing = _existing(c_id=783, marker=marker_outdated)
+        provider.get_bot_review_comments = MagicMock(return_value=[existing])
+        provider.edit_review_comment = MagicMock(return_value=False)
+        provider.resolve_review_thread = MagicMock(return_value=True)
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            # Should not raise.
+            provider.publish_code_suggestions([s_emitted])
+        provider.resolve_review_thread.assert_called_once()
+        provider.edit_review_comment.assert_called_once()
