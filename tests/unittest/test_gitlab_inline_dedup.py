@@ -673,3 +673,20 @@ class TestGitLabOutdatedPass:
             p.publish_code_suggestions([s_emitted])
         p.resolve_review_thread.assert_called_once()
         p.edit_review_comment.assert_not_called()
+
+    def test_existing_hash_re_emitted_skips_outdated_resolve(self):
+        p = self._provider()
+        s = _sug()
+        marker = generate_marker(s["original_suggestion"])
+        existing = _gl_existing(c_id=20, marker=marker)  # is_resolved defaults to False
+        p.get_bot_review_comments = MagicMock(return_value=[existing])
+        p.edit_review_comment = MagicMock(return_value=True)
+        p.resolve_review_thread = MagicMock()
+        p.unresolve_review_thread = MagicMock()
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            p.publish_code_suggestions([s])
+        p.resolve_review_thread.assert_not_called()
+        # Edit happened in the update path, not the outdated pass:
+        p.edit_review_comment.assert_called_once()
+        # Not previously resolved, so no unresolve:
+        p.unresolve_review_thread.assert_not_called()

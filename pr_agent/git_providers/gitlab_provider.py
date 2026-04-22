@@ -847,6 +847,7 @@ class GitLabProvider(GitProvider):
                     continue
                 if RESOLVED_BODY_MARKER in (c.get("body") or ""):
                     continue
+                # Per-iteration guard so a single failure cannot propagate; criterion 8 of resolve-outdated-inline-comments.
                 try:
                     if not self.resolve_review_thread(c):
                         continue
