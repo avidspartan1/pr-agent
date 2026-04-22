@@ -146,3 +146,61 @@ class TestNormalizePersistentMode:
 
     def test_valid_set_exposed(self):
         assert VALID_PERSISTENT_MODES == {PERSISTENT_MODE_OFF, PERSISTENT_MODE_UPDATE, PERSISTENT_MODE_SKIP}
+
+
+from pr_agent.algo.inline_comments_dedup import normalize_code
+
+
+class TestNormalizeCode:
+    def test_empty_inputs(self):
+        assert normalize_code("") == ""
+        assert normalize_code(None) == ""
+        assert normalize_code("   \n  \n") == ""
+
+    def test_reindent_produces_same_output(self):
+        a = (
+            "        cleanup_mode=cleanup_mode,\n"
+        )
+        b = (
+            "    cleanup_mode=cleanup_mode,\n"
+        )
+        assert normalize_code(a) == normalize_code(b)
+
+    def test_multiline_reindent_produces_same_output(self):
+        a = (
+            "        bump_version(\n"
+            "            github=self.github,\n"
+            "            cleanup_mode=None if dry_run else cleanup_mode,\n"
+            "        )\n"
+        )
+        b = (
+            "    bump_version(\n"
+            "        github=self.github,\n"
+            "        cleanup_mode=None if dry_run else cleanup_mode,\n"
+            "    )\n"
+        )
+        assert normalize_code(a) == normalize_code(b)
+
+    def test_trailing_whitespace_stripped(self):
+        assert normalize_code("foo = 1   \n") == normalize_code("foo = 1\n")
+
+    def test_internal_whitespace_collapsed(self):
+        assert normalize_code("foo   =   1") == normalize_code("foo = 1")
+
+    def test_leading_and_trailing_blank_lines_dropped(self):
+        assert normalize_code("\n\nfoo = 1\n\n\n") == normalize_code("foo = 1")
+
+    def test_tabs_expand_consistently(self):
+        tabbed = "\tfoo = 1\n\tbar = 2\n"
+        spaced = "        foo = 1\n        bar = 2\n"
+        assert normalize_code(tabbed) == normalize_code(spaced)
+
+    def test_token_difference_preserved(self):
+        assert normalize_code("cleanup_mode=None if dry_run else cleanup_mode") != \
+               normalize_code("cleanup_mode=cleanup_mode if not dry_run else None")
+
+    def test_is_idempotent(self):
+        sample = "    x = f(1, 2)\n    y = g(3)\n"
+        once = normalize_code(sample)
+        twice = normalize_code(once)
+        assert once == twice

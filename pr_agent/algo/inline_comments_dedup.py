@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import textwrap
 from typing import Any, Optional
 
 MARKER_PREFIX = "<!-- pr-agent-inline-id:"
@@ -49,6 +50,32 @@ def _pick_content(suggestion: dict) -> Optional[str]:
 
 def _normalize(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+_INTERNAL_WS_RE = re.compile(r"(?<=\S)\s+(?=\S)")
+
+
+def normalize_code(text: Optional[str]) -> str:
+    """Normalize a proposed-edit code snippet for stable hashing.
+
+    Expands tabs, strips trailing whitespace per line, drops leading and
+    trailing fully-blank lines, removes the longest common leading
+    whitespace across remaining lines (textwrap.dedent), and collapses
+    runs of internal whitespace within each line. Token content survives,
+    so genuinely different edits still produce different outputs.
+    """
+    if not text:
+        return ""
+    expanded = text.expandtabs()
+    lines = [line.rstrip() for line in expanded.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    if not lines:
+        return ""
+    dedented = textwrap.dedent("\n".join(lines))
+    return "\n".join(_INTERNAL_WS_RE.sub(" ", line) for line in dedented.split("\n"))
 
 
 def generate_marker(suggestion: dict) -> Optional[str]:
