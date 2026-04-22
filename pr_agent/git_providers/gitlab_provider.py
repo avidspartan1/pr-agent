@@ -19,8 +19,10 @@ from ..algo.inline_comments_dedup import (
     MARKER_SUFFIX,
     PERSISTENT_MODE_OFF,
     PERSISTENT_MODE_SKIP,
+    RESOLVED_BODY_MARKER,
     append_marker,
     build_marker_index,
+    format_resolved_body,
     generate_marker,
     normalize_persistent_mode,
 )
@@ -762,8 +764,12 @@ class GitLabProvider(GitProvider):
         mode = normalize_persistent_mode(
             get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
         )
+        resolve_outdated = bool(
+            get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True)
+        )
 
         existing_index = {}
+        emitted_hashes: set[str] = set()
         if mode != PERSISTENT_MODE_OFF:
             try:
                 existing_index = build_marker_index(self.get_bot_review_comments())
@@ -789,6 +795,7 @@ class GitLabProvider(GitProvider):
                     if marker:
                         body = append_marker(body, marker)
                         marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
+                        emitted_hashes.add(marker_hash)
                         existing = existing_index.get(marker_hash)
                         if existing is not None:
                             if mode == PERSISTENT_MODE_SKIP:
@@ -799,6 +806,8 @@ class GitLabProvider(GitProvider):
                                 continue
                             # mode == update
                             if self.edit_review_comment(existing.get("id"), body):
+                                if resolve_outdated and existing.get("is_resolved"):
+                                    self.unresolve_review_thread(existing)
                                 continue
                             get_logger().info(
                                 f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
@@ -828,6 +837,24 @@ class GitLabProvider(GitProvider):
                                          target_file, target_line_no, original_suggestion)
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
+
+        # ---- Outdated pass: resolve threads whose marker is no longer emitted ----
+        if mode != PERSISTENT_MODE_OFF and resolve_outdated:
+            for h, c in existing_index.items():
+                if h in emitted_hashes:
+                    continue
+                if c.get("is_resolved"):
+                    continue
+                if RESOLVED_BODY_MARKER in (c.get("body") or ""):
+                    continue
+                try:
+                    if not self.resolve_review_thread(c):
+                        continue
+                    self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                except Exception as e:
+                    get_logger().warning(
+                        f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
+                    )
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
         return True
