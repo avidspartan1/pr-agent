@@ -28,7 +28,7 @@
 - [ ] `GitProvider.resolve_review_thread(comment)` and `GitProvider.unresolve_review_thread(comment)` both return `False` by default.
 - [ ] `configuration.toml` declares `resolve_outdated_inline_comments = true`.
 
-**Verify:** `pytest tests/unittest/test_inline_comments_dedup_constants.py -v` → 3 passed; existing dedup tests unaffected: `pytest tests/unittest/test_github_inline_dedup.py tests/unittest/test_gitlab_inline_dedup.py -v` → all pass.
+**Verify:** `uv run pytest tests/unittest/test_inline_comments_dedup_constants.py -v` → 3 passed; existing dedup tests unaffected: `uv run pytest tests/unittest/test_github_inline_dedup.py tests/unittest/test_gitlab_inline_dedup.py -v` → all pass.
 
 **Steps:**
 
@@ -119,12 +119,12 @@ def test_base_provider_defaults_return_false():
 
 - [ ] **Step 5: Run the test (it should pass green; this isn't behavior under test, just contract pinning)**
 
-Run: `pytest tests/unittest/test_inline_comments_dedup_constants.py -v`
+Run: `uv run pytest tests/unittest/test_inline_comments_dedup_constants.py -v`
 Expected: 3 passed.
 
 - [ ] **Step 6: Confirm existing dedup tests still pass**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py tests/unittest/test_gitlab_inline_dedup.py -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py tests/unittest/test_gitlab_inline_dedup.py -v`
 Expected: all existing tests pass (Task 0 changes are purely additive).
 
 - [ ] **Step 7: Commit**
@@ -152,7 +152,7 @@ git commit -m "feat(algo,providers): scaffolding for resolve-outdated inline com
 - [ ] `resolve_review_thread(comment)` posts the `resolveReviewThread` mutation with `comment["thread_id"]` and returns `True` on success, `False` otherwise.
 - [ ] `unresolve_review_thread(comment)` mirrors the above with `unresolveReviewThread`.
 
-**Verify:** `pytest tests/unittest/test_github_inline_dedup.py -v` → all existing tests still pass; new resolve/unresolve tests pass.
+**Verify:** `uv run pytest tests/unittest/test_github_inline_dedup.py -v` → all existing tests still pass; new resolve/unresolve tests pass.
 
 **Steps:**
 
@@ -323,7 +323,7 @@ class TestGitHubResolveUnresolve:
 
 - [ ] **Step 2: Run the new tests to verify they fail (TDD red)**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py::TestGetBotReviewCommentsGraphQL tests/unittest/test_github_inline_dedup.py::TestGitHubResolveUnresolve -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py::TestGetBotReviewCommentsGraphQL tests/unittest/test_github_inline_dedup.py::TestGitHubResolveUnresolve -v`
 Expected: failures — `get_bot_review_comments` still uses REST; resolve/unresolve methods don't exist on `GithubProvider`.
 
 - [ ] **Step 3: Replace `get_bot_review_comments` with the GraphQL implementation**
@@ -467,12 +467,12 @@ In `pr_agent/git_providers/github_provider.py`, immediately after `edit_review_c
 
 - [ ] **Step 5: Run the new tests to verify green**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py::TestGetBotReviewCommentsGraphQL tests/unittest/test_github_inline_dedup.py::TestGitHubResolveUnresolve -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py::TestGetBotReviewCommentsGraphQL tests/unittest/test_github_inline_dedup.py::TestGitHubResolveUnresolve -v`
 Expected: all pass.
 
 - [ ] **Step 6: Run the full GitHub dedup suite to confirm no regression**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py -v`
 Expected: all tests pass. (The pre-existing dedup tests under `TestOffMode`, `TestUpdateMode`, `TestSkipMode` only mock `provider.get_bot_review_comments` directly via `MagicMock`, so they don't depend on the REST-vs-GraphQL transport.)
 
 - [ ] **Step 7: Commit**
@@ -502,7 +502,7 @@ git commit -m "refactor(github): get_bot_review_comments via GraphQL; add resolv
 - [ ] If `resolve_review_thread` returns `False`, `edit_review_comment` is **not** called for the resolution note for that comment.
 - [ ] No exception propagates from any failure mode.
 
-**Verify:** `pytest tests/unittest/test_github_inline_dedup.py -v` → all tests pass including new `TestOutdatedPass`.
+**Verify:** `uv run pytest tests/unittest/test_github_inline_dedup.py -v` → all tests pass including new `TestOutdatedPass`.
 
 **Steps:**
 
@@ -669,7 +669,7 @@ class TestOutdatedPass:
 
 - [ ] **Step 3: Run the new tests to confirm they fail**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py::TestOutdatedPass -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py::TestOutdatedPass -v`
 Expected: failures — outdated pass and unresolve-on-re-emit don't exist yet.
 
 - [ ] **Step 4: Modify `publish_code_suggestions` in `pr_agent/git_providers/github_provider.py`**
@@ -805,12 +805,12 @@ Replace lines 619-695 (from `code_suggestions_validated = ...` through the end o
 
 - [ ] **Step 5: Run the new tests to confirm green**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py::TestOutdatedPass -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py::TestOutdatedPass -v`
 Expected: all 8 tests pass.
 
 - [ ] **Step 6: Run the entire GitHub dedup suite to confirm no regression**
 
-Run: `pytest tests/unittest/test_github_inline_dedup.py -v`
+Run: `uv run pytest tests/unittest/test_github_inline_dedup.py -v`
 Expected: all tests pass.
 
 - [ ] **Step 7: Commit**
@@ -837,7 +837,7 @@ git commit -m "feat(github): outdated-comment resolve pass with re-emit unresolv
 - [ ] `unresolve_review_thread(comment)` mirrors with `resolved=False`.
 - [ ] Both return `False` on any exception, with a warning logged.
 
-**Verify:** `pytest tests/unittest/test_gitlab_inline_dedup.py -v` → all tests pass.
+**Verify:** `uv run pytest tests/unittest/test_gitlab_inline_dedup.py -v` → all tests pass.
 
 **Note:** GitLab's existing `get_bot_review_comments` (gitlab_provider.py:704-711) already returns `discussion_id` per note. Task 0 added the abstract method named `resolve_review_thread(comment)` which takes the **whole dict** — we use `comment["thread_id"]`. We need to update GitLab's dict to also use the key `thread_id` for symmetry with GitHub, but keep `discussion_id` as an alias to avoid breaking callers that may already use it.
 
@@ -936,7 +936,7 @@ class TestGetBotReviewCommentsIncludesIsResolved:
 
 - [ ] **Step 2: Run the new tests to confirm they fail**
 
-Run: `pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabResolveUnresolve tests/unittest/test_gitlab_inline_dedup.py::TestGetBotReviewCommentsIncludesIsResolved -v`
+Run: `uv run pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabResolveUnresolve tests/unittest/test_gitlab_inline_dedup.py::TestGetBotReviewCommentsIncludesIsResolved -v`
 Expected: failures — methods missing, `is_resolved` not in returned dicts.
 
 - [ ] **Step 3: Modify `get_bot_review_comments` in `pr_agent/git_providers/gitlab_provider.py`**
@@ -989,12 +989,12 @@ In `pr_agent/git_providers/gitlab_provider.py`, immediately after `edit_review_c
 
 - [ ] **Step 5: Run the new tests to confirm green**
 
-Run: `pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabResolveUnresolve tests/unittest/test_gitlab_inline_dedup.py::TestGetBotReviewCommentsIncludesIsResolved -v`
+Run: `uv run pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabResolveUnresolve tests/unittest/test_gitlab_inline_dedup.py::TestGetBotReviewCommentsIncludesIsResolved -v`
 Expected: all pass.
 
 - [ ] **Step 6: Run the full GitLab dedup suite to confirm no regression**
 
-Run: `pytest tests/unittest/test_gitlab_inline_dedup.py -v`
+Run: `uv run pytest tests/unittest/test_gitlab_inline_dedup.py -v`
 Expected: all tests pass.
 
 - [ ] **Step 7: Commit**
@@ -1025,7 +1025,7 @@ Same matrix as Task 2, adapted to GitLab seams:
 - [ ] resolve failure → no edit-note for that comment.
 - [ ] No exception propagates.
 
-**Verify:** `pytest tests/unittest/test_gitlab_inline_dedup.py -v` → all tests pass.
+**Verify:** `uv run pytest tests/unittest/test_gitlab_inline_dedup.py -v` → all tests pass.
 
 **Steps:**
 
@@ -1180,7 +1180,7 @@ class TestGitLabOutdatedPass:
 
 - [ ] **Step 3: Run the new tests to confirm they fail**
 
-Run: `pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabOutdatedPass -v`
+Run: `uv run pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabOutdatedPass -v`
 Expected: failures — outdated pass and unresolve-on-re-emit don't exist yet for GitLab.
 
 - [ ] **Step 4: Modify `publish_code_suggestions` in `pr_agent/git_providers/gitlab_provider.py`**
@@ -1289,12 +1289,12 @@ If the existing function returns a value (it doesn't appear to — verify by rea
 
 - [ ] **Step 5: Run the new tests to confirm green**
 
-Run: `pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabOutdatedPass -v`
+Run: `uv run pytest tests/unittest/test_gitlab_inline_dedup.py::TestGitLabOutdatedPass -v`
 Expected: all 7 tests pass.
 
 - [ ] **Step 6: Run the full GitLab dedup suite to confirm no regression**
 
-Run: `pytest tests/unittest/test_gitlab_inline_dedup.py -v`
+Run: `uv run pytest tests/unittest/test_gitlab_inline_dedup.py -v`
 Expected: all tests pass.
 
 - [ ] **Step 7: Commit**
@@ -1352,7 +1352,7 @@ git commit -m "docs(improve): document resolve_outdated_inline_comments setting"
 After all five tasks land, run the full inline-dedup suite end-to-end:
 
 ```bash
-pytest tests/unittest/test_inline_comments_dedup_constants.py \
+uv run pytest tests/unittest/test_inline_comments_dedup_constants.py \
        tests/unittest/test_github_inline_dedup.py \
        tests/unittest/test_gitlab_inline_dedup.py -v
 ```
