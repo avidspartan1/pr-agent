@@ -1194,9 +1194,9 @@ from pr_agent.algo.inline_comments_dedup import (
     PERSISTENT_MODE_OFF,
     PERSISTENT_MODE_SKIP,
     RESOLVED_BODY_MARKER,
-    RESOLVED_NOTE,
     append_marker,
     build_marker_index,
+    format_resolved_body,
     generate_marker,
     normalize_persistent_mode,
 )
@@ -1278,11 +1278,7 @@ After the `for suggestion in code_suggestions:` loop terminates (and before the 
                     continue
                 if not self.resolve_review_thread(c):
                     continue
-                new_body = (
-                    (c.get("body") or "").rstrip()
-                    + f"\n\n---\n_{RESOLVED_NOTE}_\n{RESOLVED_BODY_MARKER}"
-                )
-                self.edit_review_comment(c.get("id"), new_body)
+                self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
 ```
 
 If the existing function returns a value (it doesn't appear to — verify by reading the current end of `publish_code_suggestions`), keep that return statement after the outdated pass.
