@@ -586,6 +586,14 @@ class GithubProvider(GitProvider):
     }
     """
 
+    def _graphql_url(self) -> str:
+        # On GHES the REST base is `.../api/v3` but GraphQL lives at `.../api/graphql`.
+        # github.com has no `/v3` suffix, so the fallback covers it.
+        base = self.base_url
+        if base.endswith("/api/v3"):
+            return base[: -len("/v3")] + "/graphql"
+        return f"{base}/graphql"
+
     def get_bot_review_comments(self) -> list[dict]:
         """
         Return the bot's existing inline review comments on this PR.
@@ -606,7 +614,7 @@ class GithubProvider(GitProvider):
             while True:
                 _, data = self.pr._requester.requestJsonAndCheck(
                     "POST",
-                    f"{self.base_url}/graphql",
+                    self._graphql_url(),
                     input={
                         "query": self._BOT_REVIEW_COMMENTS_QUERY,
                         "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor},
@@ -681,7 +689,7 @@ class GithubProvider(GitProvider):
         try:
             _, data = self.pr._requester.requestJsonAndCheck(
                 "POST",
-                f"{self.base_url}/graphql",
+                self._graphql_url(),
                 input={"query": query, "variables": {"threadId": thread_id}},
             )
             if not data or data.get("errors"):

@@ -284,6 +284,20 @@ class TestGetBotReviewCommentsGraphQL:
             out = provider.get_bot_review_comments()
         assert out == []
 
+    def test_graphql_url_strips_api_v3_suffix_for_ghes(self):
+        # GHES REST base is `.../api/v3` but GraphQL lives at `.../api/graphql`;
+        # naive `{base_url}/graphql` would 404 on GHES.
+        from pr_agent.git_providers.github_provider import GithubProvider
+        p = GithubProvider.__new__(GithubProvider)
+        p.base_url = "https://ghes.example.com/api/v3"
+        assert p._graphql_url() == "https://ghes.example.com/api/graphql"
+
+    def test_graphql_url_passes_through_for_github_com(self):
+        from pr_agent.git_providers.github_provider import GithubProvider
+        p = GithubProvider.__new__(GithubProvider)
+        p.base_url = "https://api.github.com"
+        assert p._graphql_url() == "https://api.github.com/graphql"
+
 
 class TestGitHubResolveUnresolve:
     """Exercises resolve_review_thread / unresolve_review_thread mutations."""
