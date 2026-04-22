@@ -204,3 +204,88 @@ class TestNormalizeCode:
         once = normalize_code(sample)
         twice = normalize_code(once)
         assert once == twice
+
+
+def _structured_suggestion(
+    file="src/app.py",
+    content="some prose",
+    improved_code="cleanup_mode=None if dry_run else cleanup_mode,",
+    label="possible issue",
+    start=10,
+    end=12,
+):
+    return {
+        "relevant_file": file,
+        "label": label,
+        "suggestion_content": content,
+        "improved_code": improved_code,
+        "relevant_lines_start": start,
+        "relevant_lines_end": end,
+    }
+
+
+class TestGenerateMarkerStructured:
+    def test_paraphrased_prose_same_edit_collides(self):
+        a = _structured_suggestion(
+            content="When dry_run=True, cleanup_mode is still passed through unchanged to bump_version.",
+        )
+        b = _structured_suggestion(
+            content="When dry_run=True, the cleanup_mode is still forwarded unchanged to bump_version.",
+        )
+        assert generate_marker(a) == generate_marker(b)
+
+    def test_same_prose_different_edit_splits(self):
+        a = _structured_suggestion(
+            improved_code="cleanup_mode=None if dry_run else cleanup_mode,",
+        )
+        b = _structured_suggestion(
+            improved_code="cleanup_mode=cleanup_mode if not dry_run else None,",
+        )
+        assert generate_marker(a) != generate_marker(b)
+
+    def test_reindented_edit_collides(self):
+        a = _structured_suggestion(
+            improved_code="        cleanup_mode=None if dry_run else cleanup_mode,\n",
+        )
+        b = _structured_suggestion(
+            improved_code="    cleanup_mode=None if dry_run else cleanup_mode,\n",
+        )
+        assert generate_marker(a) == generate_marker(b)
+
+    def test_label_change_does_not_split_when_structured(self):
+        a = _structured_suggestion(label="possible issue")
+        b = _structured_suggestion(label="best practice")
+        assert generate_marker(a) == generate_marker(b)
+
+    def test_missing_file_returns_none(self):
+        s = _structured_suggestion()
+        s["relevant_file"] = ""
+        assert generate_marker(s) is None
+
+    def test_empty_improved_code_falls_back_to_prose(self):
+        s = _structured_suggestion(improved_code="")
+        # With prose + label present, fallback produces a marker.
+        assert generate_marker(s) is not None
+
+    def test_fallback_missing_label_returns_none(self):
+        s = _structured_suggestion(improved_code="", label="")
+        assert generate_marker(s) is None
+
+    def test_fallback_missing_content_returns_none(self):
+        s = _structured_suggestion(improved_code="", content="")
+        s["suggestion_content"] = ""
+        assert generate_marker(s) is None
+
+    def test_structured_and_prose_differ_on_same_inputs(self):
+        # Same file/label/content; structured extra input shouldn't alias to prose hash.
+        structured = _structured_suggestion(
+            improved_code="x = 1",
+            content="x = 1",
+            label="possible issue",
+        )
+        prose_only = _structured_suggestion(
+            improved_code="",
+            content="x = 1",
+            label="possible issue",
+        )
+        assert generate_marker(structured) != generate_marker(prose_only)

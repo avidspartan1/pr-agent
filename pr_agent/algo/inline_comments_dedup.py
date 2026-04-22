@@ -39,6 +39,10 @@ _MARKER_RE = re.compile(
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 
+_SEP = "\x00"
+_HASH_VERSION_STRUCTURED = "v2s"
+_HASH_VERSION_PROSE = "v2p"
+
 
 def _pick_content(suggestion: dict) -> Optional[str]:
     for key in ("suggestion_content", "suggestion_summary", "content"):
@@ -78,14 +82,55 @@ def normalize_code(text: Optional[str]) -> str:
     return "\n".join(_INTERNAL_WS_RE.sub(" ", line) for line in dedented.split("\n"))
 
 
+# Dedup identity is structured-first, prose-fallback:
+#   - If a suggestion has `improved_code`, the hash covers
+#     (version_tag + file + normalized improved_code). Prose wording never
+#     affects the key, and label is intentionally excluded — the edit
+#     itself is the identity.
+#   - Otherwise we fall back to (version_tag + file + label + prose prefix).
+#
+# This is a strict (a) design: prose is NEVER consulted when a structured
+# edit exists. Two suggestions at the same spot with the same prose but
+# different edits intentionally remain separate comments — we'd rather
+# under-merge than over-merge genuinely distinct fixes.
+#
+# Line-range is deliberately NOT in the key so dedup stays stable across
+# upstream pushes that drift the target line (a property the user-facing
+# docs explicitly promise).
+#
+# The version tag (v2s / v2p) lives INSIDE the hashed signature, making
+# the two namespaces preimage-distinct and preventing accidental cross-
+# namespace collisions. The marker grammar is unchanged, so pre-existing
+# v1 markers on live PRs self-heal via the outdated-pass auto-resolve
+# (resolve_outdated_inline_comments) on the first re-run after deployment.
+#
+# A fuzzy near-miss signal (shingle / Jaccard) was considered and deferred;
+# see docs/docs/tools/improve.md and the Serena memory
+# `future_fuzzy_inline_dedup`.
 def generate_marker(suggestion: dict) -> Optional[str]:
     """Return a stable marker for this suggestion, or None if required fields are missing."""
     file = suggestion.get("relevant_file")
-    label = suggestion.get("label")
-    content = _pick_content(suggestion)
-    if not file or not label or not content:
+    if not file:
         return None
-    sig = f"{str(file).strip()}|{str(label).strip()}|{_normalize(content)[:_CONTENT_PREFIX_LEN]}"
+    file = str(file).strip()
+    if not file:
+        return None
+
+    improved_code = suggestion.get("improved_code")
+    if isinstance(improved_code, str) and improved_code.strip():
+        sig = _SEP.join([_HASH_VERSION_STRUCTURED, file, normalize_code(improved_code)])
+    else:
+        label = suggestion.get("label")
+        content = _pick_content(suggestion)
+        if not label or not content:
+            return None
+        sig = _SEP.join([
+            _HASH_VERSION_PROSE,
+            file,
+            str(label).strip(),
+            _normalize(content)[:_CONTENT_PREFIX_LEN],
+        ])
+
     digest = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:_HASH_LEN]
     return f"{MARKER_PREFIX}{digest}{MARKER_SUFFIX}"
 
