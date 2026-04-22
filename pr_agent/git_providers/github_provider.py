@@ -787,6 +787,8 @@ class GithubProvider(GitProvider):
             post_parameters_list.append(post_parameters)
 
         # ---- Outdated pass: resolve threads whose marker is no longer emitted ----
+        # existing_index is the snapshot from the initial fetch; matched-and-edited
+        # entries are excluded here by emitted_hashes, so staleness is not a concern.
         if mode != PERSISTENT_MODE_OFF and resolve_outdated:
             for h, c in existing_index.items():
                 if h in emitted_hashes:
@@ -795,9 +797,15 @@ class GithubProvider(GitProvider):
                     continue
                 if RESOLVED_BODY_MARKER in (c.get("body") or ""):
                     continue
-                if not self.resolve_review_thread(c):
-                    continue
-                self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                # Per-iteration guard so a single failure cannot propagate; criterion 8 of resolve-outdated-inline-comments.
+                try:
+                    if not self.resolve_review_thread(c):
+                        continue
+                    self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                except Exception as e:
+                    get_logger().warning(
+                        f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
+                    )
 
         if not post_parameters_list:
             return True

@@ -368,6 +368,10 @@ class GitProvider(ABC):
 
         Returns True on success, False otherwise. Default: return False (unsupported),
         which causes the resolve-outdated pass to skip this comment.
+
+        Providers wiring this in must also override get_bot_review_comments to
+        include is_resolved on each dict and wire the outdated pass into their
+        publish_code_suggestions; without all three the feature silently no-ops.
         """
         return False
 

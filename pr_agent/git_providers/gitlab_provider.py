@@ -703,10 +703,10 @@ class GitLabProvider(GitProvider):
                     if line_range:
                         start = line_range.get("start") or {}
                         start_line = start.get("new_line")
-                    notes = discussion.attributes.get("notes") or [{}]
+                    disc_notes = discussion.attributes.get("notes") or [{}]
                     is_resolved = getattr(discussion, "resolved", None)
                     if is_resolved is None:
-                        is_resolved = notes[0].get("resolved", False)
+                        is_resolved = disc_notes[0].get("resolved", False)
                     out.append({
                         "id": note.get("id"),
                         "thread_id": discussion.id,
