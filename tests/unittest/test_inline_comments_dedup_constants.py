@@ -12,9 +12,11 @@ def test_resolved_marker_is_html_comment():
     assert "\n" not in RESOLVED_BODY_MARKER
 
 
-def test_resolved_marker_substring_check_round_trips():
-    body = "some comment body\n\n---\n_" + RESOLVED_NOTE + "_\n" + RESOLVED_BODY_MARKER
-    assert RESOLVED_BODY_MARKER in body
+def test_resolved_marker_detectable_only_when_present():
+    body_with = "some comment body\n\n---\n_" + RESOLVED_NOTE + "_\n" + RESOLVED_BODY_MARKER
+    body_without = "an unrelated comment that quotes <!-- pr-agent-inline-id:abc123def456 -->"
+    assert RESOLVED_BODY_MARKER in body_with
+    assert RESOLVED_BODY_MARKER not in body_without
 
 
 def test_base_provider_defaults_return_false():
