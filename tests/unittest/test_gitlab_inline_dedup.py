@@ -416,3 +416,89 @@ class TestEditReviewComment:
         result = p.edit_review_comment(99, "new body")
 
         assert result is False
+
+
+class TestGitLabResolveUnresolve:
+    def _provider(self):
+        from pr_agent.git_providers.gitlab_provider import GitLabProvider
+        p = GitLabProvider.__new__(GitLabProvider)
+        p.mr = MagicMock()
+        return p
+
+    def test_resolve_calls_save_with_resolved_true(self):
+        p = self._provider()
+        d = MagicMock()
+        d.resolvable = True
+        d.resolved = False
+        p.mr.discussions.get = MagicMock(return_value=d)
+        assert p.resolve_review_thread({"thread_id": "DIS123"}) is True
+        p.mr.discussions.get.assert_called_once_with("DIS123")
+        assert d.resolved is True
+        d.save.assert_called_once()
+
+    def test_unresolve_calls_save_with_resolved_false(self):
+        p = self._provider()
+        d = MagicMock()
+        d.resolvable = True
+        d.resolved = True
+        p.mr.discussions.get = MagicMock(return_value=d)
+        assert p.unresolve_review_thread({"thread_id": "DIS123"}) is True
+        assert d.resolved is False
+        d.save.assert_called_once()
+
+    def test_non_resolvable_discussion_returns_false(self):
+        p = self._provider()
+        d = MagicMock()
+        d.resolvable = False
+        p.mr.discussions.get = MagicMock(return_value=d)
+        assert p.resolve_review_thread({"thread_id": "DIS123"}) is False
+        d.save.assert_not_called()
+
+    def test_resolve_returns_false_on_exception(self):
+        p = self._provider()
+        p.mr.discussions.get = MagicMock(side_effect=RuntimeError("api down"))
+        assert p.resolve_review_thread({"thread_id": "DIS123"}) is False
+
+    def test_resolve_returns_false_when_thread_id_missing(self):
+        p = self._provider()
+        p.mr.discussions.get = MagicMock()
+        assert p.resolve_review_thread({"id": 1}) is False
+        p.mr.discussions.get.assert_not_called()
+
+
+class TestGetBotReviewCommentsIncludesIsResolved:
+    def test_is_resolved_propagates_from_discussion(self):
+        from pr_agent.git_providers.gitlab_provider import GitLabProvider
+        p = GitLabProvider.__new__(GitLabProvider)
+        p.gl = MagicMock()
+        p.gl.user.username = "pr-agent-bot"
+        d_resolved = MagicMock()
+        d_resolved.id = "D-1"
+        d_resolved.attributes = {
+            "notes": [{
+                "type": "DiffNote",
+                "id": 1,
+                "body": "x",
+                "author": {"username": "pr-agent-bot"},
+                "position": {"new_path": "a.py", "new_line": 5},
+                "resolved": True,
+            }]
+        }
+        d_unresolved = MagicMock()
+        d_unresolved.id = "D-2"
+        d_unresolved.attributes = {
+            "notes": [{
+                "type": "DiffNote",
+                "id": 2,
+                "body": "y",
+                "author": {"username": "pr-agent-bot"},
+                "position": {"new_path": "b.py", "new_line": 6},
+                "resolved": False,
+            }]
+        }
+        p.mr = MagicMock()
+        p.mr.discussions.list = MagicMock(return_value=[d_resolved, d_unresolved])
+        out = p.get_bot_review_comments()
+        ids_to_resolved = {c["id"]: c["is_resolved"] for c in out}
+        assert ids_to_resolved == {1: True, 2: False}
+        assert all("thread_id" in c for c in out)

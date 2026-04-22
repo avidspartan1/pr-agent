@@ -703,11 +703,15 @@ class GitLabProvider(GitProvider):
                         start_line = start.get("new_line")
                     out.append({
                         "id": note.get("id"),
+                        "thread_id": discussion.id,
+                        "discussion_id": discussion.id,  # back-compat alias
                         "body": note.get("body") or "",
                         "path": position.get("new_path"),
                         "line": position.get("new_line"),
                         "start_line": start_line,
-                        "discussion_id": discussion.id,
+                        "is_resolved": bool(
+                            (discussion.attributes.get("notes") or [{}])[0].get("resolved", False)
+                        ),
                     })
             return out
         except Exception as e:
@@ -730,6 +734,27 @@ class GitLabProvider(GitProvider):
         except Exception as e:
             get_logger().warning(f"Failed to edit GitLab review comment {comment_id}: {e}")
             return False
+
+    def _set_discussion_resolved(self, comment: dict, resolved: bool) -> bool:
+        thread_id = comment.get("thread_id") or comment.get("discussion_id")
+        if not thread_id:
+            return False
+        try:
+            d = self.mr.discussions.get(thread_id)
+            if not getattr(d, "resolvable", True):
+                return False
+            d.resolved = resolved
+            d.save()
+            return True
+        except Exception as e:
+            get_logger().warning(f"GitLab set-resolved={resolved} failed for {thread_id}: {e}")
+            return False
+
+    def resolve_review_thread(self, comment: dict) -> bool:
+        return self._set_discussion_resolved(comment, True)
+
+    def unresolve_review_thread(self, comment: dict) -> bool:
+        return self._set_discussion_resolved(comment, False)
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         mode = normalize_persistent_mode(
