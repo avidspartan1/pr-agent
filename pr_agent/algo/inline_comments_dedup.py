@@ -94,6 +94,19 @@ def build_marker_index(comments: list[dict[str, Any]]) -> dict[str, dict[str, An
     return index
 
 
+def format_resolved_body(original_body: str) -> str:
+    """Append the auto-resolved note and idempotency marker to ``original_body``.
+
+    Shared by every provider's outdated pass so the on-screen format stays
+    identical and the body marker check (RESOLVED_BODY_MARKER in body) keeps
+    working across providers.
+    """
+    return (
+        (original_body or "").rstrip()
+        + f"\n\n---\n_{RESOLVED_NOTE}_\n{RESOLVED_BODY_MARKER}"
+    )
+
+
 def normalize_persistent_mode(raw: Any) -> str:
     """Coerce config input to one of the valid modes. Unknown values fall back to 'off'."""
     if raw is None:

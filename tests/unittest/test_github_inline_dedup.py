@@ -5,6 +5,8 @@ import pytest
 from pr_agent.algo.inline_comments_dedup import (
     MARKER_PREFIX,
     MARKER_SUFFIX,
+    RESOLVED_BODY_MARKER,
+    RESOLVED_NOTE,
     generate_marker,
 )
 
@@ -336,9 +338,6 @@ class TestGitHubResolveUnresolve:
         p.pr._requester.requestJsonAndCheck = MagicMock()
         assert p.resolve_review_thread({"id": 5}) is False
         p.pr._requester.requestJsonAndCheck.assert_not_called()
-
-
-from pr_agent.algo.inline_comments_dedup import RESOLVED_BODY_MARKER, RESOLVED_NOTE
 
 
 def _existing(c_id, marker, *, is_resolved=False, body_extra="", path="src/app.py", thread_id=None):
