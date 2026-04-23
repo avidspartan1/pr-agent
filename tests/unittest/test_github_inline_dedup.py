@@ -403,6 +403,23 @@ class TestGitHubResolveUnresolve:
         p.pr._requester.requestJsonAndCheck.assert_not_called()
 
 
+class TestGetRepoSettings:
+    def test_logs_warning_when_repo_settings_cannot_be_read(self, provider):
+        provider.repo_obj = MagicMock()
+        provider.repo_obj.get_contents.side_effect = RuntimeError("ghes read failed")
+
+        with patch("pr_agent.git_providers.github_provider.get_logger") as mock_get_logger:
+            logger = MagicMock()
+            mock_get_logger.return_value = logger
+            result = provider.get_repo_settings()
+
+        assert result == ""
+        logger.warning.assert_called_once()
+        warning_message = logger.warning.call_args[0][0]
+        assert "Failed to load .pr_agent.toml file" in warning_message
+        assert "ghes read failed" in warning_message
+
+
 def _existing(c_id, marker, *, is_resolved=False, body_extra="", path="src/app.py", thread_id=None):
     return {
         "id": c_id,
