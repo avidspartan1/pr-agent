@@ -479,3 +479,95 @@ class TestOutdatedPass:
             provider.publish_code_suggestions([s_emitted])
         provider.resolve_review_thread.assert_called_once()
         provider.edit_review_comment.assert_called_once()
+
+
+class TestStructuredHashLivePath:
+    """End-to-end: paraphrased prose + identical improved_code → update, not create."""
+
+    def test_paraphrased_prose_same_edit_routes_to_edit_review_comment(self):
+        from pr_agent.algo.inline_comments_dedup import (
+            MARKER_PREFIX,
+            MARKER_SUFFIX,
+            generate_marker,
+        )
+
+        # Two suggestions that differ only in wording; improved_code is identical.
+        improved = "cleanup_mode=None if dry_run else cleanup_mode,"
+        file = "src/release.py"
+        first_run = {
+            "relevant_file": file,
+            "label": "possible issue",
+            "suggestion_content": (
+                "When dry_run=True, cleanup_mode is still passed through "
+                "unchanged to bump_version."
+            ),
+            "improved_code": improved,
+        }
+        second_run = {
+            "relevant_file": file,
+            "label": "possible issue",
+            "suggestion_content": (
+                "When dry_run=True, the cleanup_mode is still forwarded "
+                "unchanged to bump_version."
+            ),
+            "improved_code": improved,
+        }
+
+        marker_first = generate_marker(first_run)
+        marker_second = generate_marker(second_run)
+        assert marker_first == marker_second, \
+            "paraphrased prose with identical improved_code must collide"
+
+        # Build a provider as in the existing test helpers, with an
+        # existing comment carrying the v2s marker in its body.
+        with patch("pr_agent.git_providers.github_provider.GithubProvider._get_repo"), \
+             patch("pr_agent.git_providers.github_provider.GithubProvider.set_pr"), \
+             patch("pr_agent.git_providers.github_provider.GithubProvider._get_pr"):
+            from pr_agent.git_providers.github_provider import GithubProvider
+            provider = GithubProvider.__new__(GithubProvider)
+            provider.pr = MagicMock()
+            provider.base_url = "https://api.github.com"
+            provider.repo = "owner/repo"
+            provider.deployment_type = "user"
+            provider.github_user_id = "pr-agent-bot"
+
+        existing_comment = {
+            "id": 777,
+            "thread_id": "T1",
+            "body": f"old body\n\n{marker_first}",
+            "path": file,
+            "line": 12,
+            "start_line": 10,
+            "is_resolved": False,
+        }
+        provider.get_bot_review_comments = MagicMock(return_value=[existing_comment])
+        provider.edit_review_comment = MagicMock(return_value=True)
+        provider.unresolve_review_thread = MagicMock()
+        provider.validate_comments_inside_hunks = lambda xs: xs
+        provider.pr.create_review = MagicMock()
+
+        # The suggestion dict shape expected by publish_code_suggestions.
+        body_text = (
+            "**Suggestion:** paraphrased wording, same fix [possible issue]\n"
+            "```suggestion\n"
+            f"{improved}\n"
+            "```"
+        )
+        code_suggestion = {
+            "body": body_text,
+            "relevant_file": file,
+            "relevant_lines_start": 10,
+            "relevant_lines_end": 12,
+            "original_suggestion": second_run,
+        }
+
+        with _set_mode("update"):
+            provider.publish_code_suggestions([code_suggestion])
+
+        # Update path: edit called once with the existing comment's id;
+        # create_review not called.
+        provider.edit_review_comment.assert_called_once()
+        (called_id, called_body), _ = provider.edit_review_comment.call_args
+        assert called_id == 777
+        assert marker_first in called_body
+        provider.pr.create_review.assert_not_called()
