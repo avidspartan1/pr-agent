@@ -17,6 +17,19 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.inline_comments_dedup import (
+    MARKER_PREFIX,
+    MARKER_SUFFIX,
+    PERSISTENT_MODE_OFF,
+    PERSISTENT_MODE_SKIP,
+    RESOLVED_BODY_MARKER,
+    append_marker,
+    build_marker_index,
+    find_comment_by_location,
+    format_resolved_body,
+    generate_marker,
+    normalize_persistent_mode,
+)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
@@ -548,30 +561,247 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to fix inline comment, error: {e}")
         return fixed_comments
 
+    _BOT_REVIEW_COMMENTS_QUERY = """
+    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          reviewThreads(first:100, after:$cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              isResolved
+              comments(first:100) {
+                nodes {
+                  databaseId
+                  body
+                  path
+                  line
+                  startLine
+                  author { login }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    def _graphql_url(self) -> str:
+        # On GHES the REST base is `.../api/v3` but GraphQL lives at `.../api/graphql`.
+        # github.com has no `/v3` suffix, so the fallback covers it.
+        base = self.base_url
+        if base.endswith("/api/v3"):
+            return base[: -len("/v3")] + "/graphql"
+        return f"{base}/graphql"
+
+    def get_bot_review_comments(self) -> list[dict]:
+        """
+        Return the bot's existing inline review comments on this PR.
+
+        Uses GraphQL to expose per-thread resolution state and the thread node id
+        (needed by resolve_review_thread / unresolve_review_thread). Filters by
+        author to avoid matching human reviewers. Returns dicts with keys:
+        id, thread_id, body, path, line, start_line, is_resolved.
+        """
+        try:
+            our_app_name = (get_settings().get("GITHUB.APP_NAME", "") or "").lower()
+            bot_user_id = (self.get_user_id() or "").lower() if self.deployment_type == "user" else ""
+            owner, _, name = self.repo.partition("/")
+            number = self.pr.number
+
+            out: list[dict] = []
+            cursor: str | None = None
+            while True:
+                _, data = self.pr._requester.requestJsonAndCheck(
+                    "POST",
+                    self._graphql_url(),
+                    input={
+                        "query": self._BOT_REVIEW_COMMENTS_QUERY,
+                        "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor},
+                    },
+                )
+                if not data or data.get("errors"):
+                    get_logger().warning(
+                        f"get_bot_review_comments GraphQL errors: {(data or {}).get('errors')}"
+                    )
+                    return []
+                threads = (((data.get("data") or {}).get("repository") or {})
+                           .get("pullRequest") or {}).get("reviewThreads") or {}
+                page_info = threads.get("pageInfo") or {}
+                for t in threads.get("nodes") or []:
+                    thread_id = t.get("id")
+                    is_resolved = bool(t.get("isResolved"))
+                    for c in ((t.get("comments") or {}).get("nodes") or []):
+                        login = ((c.get("author") or {}).get("login") or "").lower()
+                        same_author = False
+                        if self.deployment_type == "app":
+                            same_author = bool(our_app_name) and our_app_name in login
+                        elif self.deployment_type == "user":
+                            same_author = bool(bot_user_id) and login == bot_user_id
+                        if not same_author:
+                            continue
+                        out.append({
+                            "id": c.get("databaseId"),
+                            "thread_id": thread_id,
+                            "body": c.get("body") or "",
+                            "path": c.get("path"),
+                            "line": c.get("line"),
+                            "start_line": c.get("startLine"),
+                            "is_resolved": is_resolved,
+                        })
+                cursor = page_info.get("endCursor")
+                if not page_info.get("hasNextPage") or not cursor:
+                    break
+            return out
+        except Exception as e:
+            get_logger().warning(f"Failed to list GitHub review comments via GraphQL: {e}")
+            return []
+
+    def edit_review_comment(self, comment_id, body: str) -> bool:
+        try:
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            self.pr._requester.requestJsonAndCheck(
+                "PATCH",
+                f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}",
+                input={"body": body},
+            )
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to edit GitHub review comment {comment_id}: {e}")
+            return False
+
+    _RESOLVE_THREAD_MUTATION = """
+    mutation($threadId:ID!) {
+      resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
+    }
+    """
+
+    _UNRESOLVE_THREAD_MUTATION = """
+    mutation($threadId:ID!) {
+      unresolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
+    }
+    """
+
+    def _run_thread_mutation(self, query: str, comment: dict) -> bool:
+        thread_id = comment.get("thread_id")
+        if not thread_id:
+            return False
+        try:
+            _, data = self.pr._requester.requestJsonAndCheck(
+                "POST",
+                self._graphql_url(),
+                input={"query": query, "variables": {"threadId": thread_id}},
+            )
+            if not data or data.get("errors"):
+                get_logger().warning(
+                    f"GitHub thread mutation errors for {thread_id}: {(data or {}).get('errors')}"
+                )
+                return False
+            return True
+        except Exception as e:
+            get_logger().warning(f"GitHub thread mutation failed for {thread_id}: {e}")
+            return False
+
+    def resolve_review_thread(self, comment: dict) -> bool:
+        return self._run_thread_mutation(self._RESOLVE_THREAD_MUTATION, comment)
+
+    def unresolve_review_thread(self, comment: dict) -> bool:
+        return self._run_thread_mutation(self._UNRESOLVE_THREAD_MUTATION, comment)
+
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         """
-        Publishes code suggestions as comments on the PR.
-        """
-        post_parameters_list = []
+        Publishes code suggestions as review comments on the PR.
 
+        When `pr_code_suggestions.persistent_inline_comments` is 'update' (default)
+        or 'skip', a stable marker is embedded in each body so subsequent runs
+        can recognize and update (or skip) the existing comment rather than
+        creating duplicates.
+        """
         code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions)
 
+        mode = normalize_persistent_mode(
+            get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
+        )
+        resolve_outdated = bool(
+            get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True)
+        )
+
+        existing_index: dict[str, list[dict]] = {}
+        if mode != PERSISTENT_MODE_OFF:
+            try:
+                existing_index = build_marker_index(self.get_bot_review_comments())
+            except Exception as e:
+                get_logger().warning(f"persistent_inline_comments: fetch failed, falling back to create-new: {e}")
+                existing_index = {}
+
+        reused_comment_ids: set[int] = set()
+        post_parameters_list = []
         for suggestion in code_suggestions_validated:
-            body = suggestion['body']
-            relevant_file = suggestion['relevant_file']
-            relevant_lines_start = suggestion['relevant_lines_start']
-            relevant_lines_end = suggestion['relevant_lines_end']
+            body = suggestion["body"]
+            relevant_file = suggestion["relevant_file"]
+            relevant_lines_start = suggestion["relevant_lines_start"]
+            relevant_lines_end = suggestion["relevant_lines_end"]
 
             if not relevant_lines_start or relevant_lines_start == -1:
                 get_logger().exception(
                     f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
                 continue
-
             if relevant_lines_end < relevant_lines_start:
-                get_logger().exception(f"Failed to publish code suggestion, "
-                                  f"relevant_lines_end is {relevant_lines_end} and "
-                                  f"relevant_lines_start is {relevant_lines_start}")
+                get_logger().exception(
+                    f"Failed to publish code suggestion, "
+                    f"relevant_lines_end is {relevant_lines_end} and "
+                    f"relevant_lines_start is {relevant_lines_start}")
                 continue
+
+            if mode != PERSISTENT_MODE_OFF:
+                marker = generate_marker(suggestion.get("original_suggestion") or suggestion)
+                if marker:
+                    body = append_marker(body, marker)
+                    marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
+                    existing = find_comment_by_location(
+                        existing_index.get(marker_hash, []),
+                        relevant_file,
+                        relevant_lines_start,
+                        relevant_lines_end,
+                    )
+                    if existing is not None:
+                        if mode == PERSISTENT_MODE_SKIP:
+                            if resolve_outdated and (
+                                existing.get("is_resolved")
+                                or RESOLVED_BODY_MARKER in (existing.get("body") or "")
+                            ):
+                                if self.edit_review_comment(existing.get("id"), body):
+                                    reused_comment_ids.add(existing.get("id"))
+                                    if existing.get("is_resolved"):
+                                        self.unresolve_review_thread(existing)
+                                    continue
+                                get_logger().info(
+                                    f"persistent_inline_comments=skip: reopen failed for {existing.get('id')}; "
+                                    f"falling back to create-new"
+                                )
+                            else:
+                                reused_comment_ids.add(existing.get("id"))
+                                get_logger().info(
+                                    f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
+                                    f"on {relevant_file}; not re-posting")
+                                continue
+                        else:
+                            # mode == update
+                            if self.edit_review_comment(existing.get("id"), body):
+                                reused_comment_ids.add(existing.get("id"))
+                                # If we previously auto-resolved this thread but the
+                                # suggestion is back, unresolve it.
+                                if resolve_outdated and existing.get("is_resolved"):
+                                    self.unresolve_review_thread(existing)
+                                continue
+                            get_logger().info(
+                                f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
+                                f"falling back to create-new")
+                    elif mode == PERSISTENT_MODE_SKIP:
+                        # No same-location match, so allow a new inline comment and
+                        # let the outdated pass resolve any stale thread with this marker.
+                        pass
 
             if relevant_lines_end > relevant_lines_start:
                 post_parameters = {
@@ -581,7 +811,7 @@ class GithubProvider(GitProvider):
                     "start_line": relevant_lines_start,
                     "start_side": "RIGHT",
                 }
-            else:  # API is different for single line comments
+            else:
                 post_parameters = {
                     "body": body,
                     "path": relevant_file,
@@ -589,6 +819,29 @@ class GithubProvider(GitProvider):
                     "side": "RIGHT",
                 }
             post_parameters_list.append(post_parameters)
+
+        # ---- Outdated pass: resolve threads whose marker is no longer emitted ----
+        if mode != PERSISTENT_MODE_OFF and resolve_outdated:
+            for candidates in existing_index.values():
+                for c in candidates:
+                    if c.get("id") in reused_comment_ids:
+                        continue
+                    if c.get("is_resolved"):
+                        continue
+                    if RESOLVED_BODY_MARKER in (c.get("body") or ""):
+                        continue
+                    # Per-iteration guard so a single failure cannot propagate; criterion 8 of resolve-outdated-inline-comments.
+                    try:
+                        if not self.resolve_review_thread(c):
+                            continue
+                        self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                    except Exception as e:
+                        get_logger().warning(
+                            f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
+                        )
+
+        if not post_parameters_list:
+            return True
 
         try:
             self.publish_inline_comments(post_parameters_list)
@@ -737,7 +990,8 @@ class GithubProvider(GitProvider):
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
             return contents
-        except Exception:
+        except Exception as e:
+            get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
             return ""
 
     def get_workspace_name(self):
