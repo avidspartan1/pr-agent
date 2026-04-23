@@ -114,20 +114,20 @@ class TestBuildMarkerIndex:
             {"id": 2, "body": "body B <!-- pr-agent-inline-id:bbbbbbbbbbbb -->"},
         ]
         index = build_marker_index(comments)
-        assert index["aaaaaaaaaaaa"]["id"] == 1
-        assert index["bbbbbbbbbbbb"]["id"] == 2
+        assert [comment["id"] for comment in index["aaaaaaaaaaaa"]] == [1]
+        assert [comment["id"] for comment in index["bbbbbbbbbbbb"]] == [2]
 
     def test_ignores_unmarked(self):
         comments = [{"id": 1, "body": "no marker"}]
         assert build_marker_index(comments) == {}
 
-    def test_last_wins_on_duplicate_hash(self):
+    def test_duplicate_hashes_are_preserved(self):
         comments = [
             {"id": 1, "body": "A <!-- pr-agent-inline-id:aaaaaaaaaaaa -->"},
             {"id": 2, "body": "B <!-- pr-agent-inline-id:aaaaaaaaaaaa -->"},
         ]
         index = build_marker_index(comments)
-        assert index["aaaaaaaaaaaa"]["id"] == 2
+        assert [comment["id"] for comment in index["aaaaaaaaaaaa"]] == [1, 2]
 
 
 class TestNormalizePersistentMode:
@@ -184,9 +184,6 @@ class TestNormalizeCode:
     def test_trailing_whitespace_stripped(self):
         assert normalize_code("foo = 1   \n") == normalize_code("foo = 1\n")
 
-    def test_internal_whitespace_collapsed(self):
-        assert normalize_code("foo   =   1") == normalize_code("foo = 1")
-
     def test_leading_and_trailing_blank_lines_dropped(self):
         assert normalize_code("\n\nfoo = 1\n\n\n") == normalize_code("foo = 1")
 
@@ -204,6 +201,9 @@ class TestNormalizeCode:
         once = normalize_code(sample)
         twice = normalize_code(once)
         assert once == twice
+
+    def test_internal_whitespace_in_string_literal_is_preserved(self):
+        assert normalize_code('message = "a  b"') != normalize_code('message = "a b"')
 
 
 def _structured_suggestion(
@@ -289,3 +289,8 @@ class TestGenerateMarkerStructured:
             label="possible issue",
         )
         assert generate_marker(structured) != generate_marker(prose_only)
+
+    def test_same_hash_can_be_reused_for_multiple_locations(self):
+        first = _structured_suggestion(start=10, end=12)
+        second = _structured_suggestion(start=40, end=42)
+        assert generate_marker(first) == generate_marker(second)

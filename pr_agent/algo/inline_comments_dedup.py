@@ -56,17 +56,12 @@ def _normalize(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
-_INTERNAL_WS_RE = re.compile(r"(?<=\S)\s+(?=\S)")
-
-
 def normalize_code(text: Optional[str]) -> str:
     """Normalize a proposed-edit code snippet for stable hashing.
 
     Expands tabs, strips trailing whitespace per line, drops leading and
-    trailing fully-blank lines, removes the longest common leading
-    whitespace across remaining lines (textwrap.dedent), and collapses
-    runs of internal whitespace within each line. Token content survives,
-    so genuinely different edits still produce different outputs.
+    trailing fully-blank lines, and removes the longest common leading
+    whitespace across remaining lines (textwrap.dedent).
     """
     if not text:
         return ""
@@ -78,8 +73,7 @@ def normalize_code(text: Optional[str]) -> str:
         lines.pop()
     if not lines:
         return ""
-    dedented = textwrap.dedent("\n".join(lines))
-    return "\n".join(_INTERNAL_WS_RE.sub(" ", line) for line in dedented.split("\n"))
+    return textwrap.dedent("\n".join(lines))
 
 
 # Dedup identity is structured-first, prose-fallback:
@@ -155,15 +149,42 @@ def append_marker(body: str, marker: str) -> str:
     return f"{body}{sep}{marker}"
 
 
-def build_marker_index(comments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Index comments by marker hash. Comments without a marker are ignored. Last wins on collision."""
-    index: dict[str, dict[str, Any]] = {}
+def build_marker_index(comments: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Index comments by marker hash, preserving all collisions under the same hash."""
+    index: dict[str, list[dict[str, Any]]] = {}
     for c in comments or []:
         body = c.get("body") or ""
         h = extract_marker(body)
         if h:
-            index[h] = c
+            index.setdefault(h, []).append(c)
     return index
+
+
+def find_comment_by_location(
+    candidates: list[dict[str, Any]],
+    relevant_file: str,
+    relevant_lines_start: int,
+    relevant_lines_end: int,
+) -> Optional[dict[str, Any]]:
+    """Return the newest candidate whose stored inline coordinates match this suggestion."""
+    if not candidates:
+        return None
+    expected_path = (relevant_file or "").strip()
+    expected_line = relevant_lines_end if relevant_lines_end > relevant_lines_start else relevant_lines_start
+    expected_start = relevant_lines_start if relevant_lines_end > relevant_lines_start else None
+
+    for candidate in reversed(candidates):
+        candidate_path = str(candidate.get("path") or "").strip()
+        candidate_line = candidate.get("line")
+        candidate_start = candidate.get("start_line")
+        if candidate_path != expected_path:
+            continue
+        if candidate_line != expected_line:
+            continue
+        if candidate_start != expected_start:
+            continue
+        return candidate
+    return None
 
 
 def format_resolved_body(original_body: str) -> str:

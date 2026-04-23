@@ -25,6 +25,7 @@ from ..algo.inline_comments_dedup import (
     RESOLVED_BODY_MARKER,
     append_marker,
     build_marker_index,
+    find_comment_by_location,
     format_resolved_body,
     generate_marker,
     normalize_persistent_mode,
@@ -726,7 +727,7 @@ class GithubProvider(GitProvider):
             get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True)
         )
 
-        existing_index: dict[str, dict] = {}
+        existing_index: dict[str, list[dict]] = {}
         if mode != PERSISTENT_MODE_OFF:
             try:
                 existing_index = build_marker_index(self.get_bot_review_comments())
@@ -734,7 +735,7 @@ class GithubProvider(GitProvider):
                 get_logger().warning(f"persistent_inline_comments: fetch failed, falling back to create-new: {e}")
                 existing_index = {}
 
-        emitted_hashes: set[str] = set()
+        reused_comment_ids: set[int] = set()
         post_parameters_list = []
         for suggestion in code_suggestions_validated:
             body = suggestion["body"]
@@ -754,28 +755,53 @@ class GithubProvider(GitProvider):
                 continue
 
             if mode != PERSISTENT_MODE_OFF:
-                marker = generate_marker(suggestion.get("original_suggestion") or {})
+                marker = generate_marker(suggestion.get("original_suggestion") or suggestion)
                 if marker:
                     body = append_marker(body, marker)
                     marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
-                    emitted_hashes.add(marker_hash)
-                    existing = existing_index.get(marker_hash)
+                    existing = find_comment_by_location(
+                        existing_index.get(marker_hash, []),
+                        relevant_file,
+                        relevant_lines_start,
+                        relevant_lines_end,
+                    )
                     if existing is not None:
                         if mode == PERSISTENT_MODE_SKIP:
+                            if resolve_outdated and (
+                                existing.get("is_resolved")
+                                or RESOLVED_BODY_MARKER in (existing.get("body") or "")
+                            ):
+                                if self.edit_review_comment(existing.get("id"), body):
+                                    reused_comment_ids.add(existing.get("id"))
+                                    if existing.get("is_resolved"):
+                                        self.unresolve_review_thread(existing)
+                                    continue
+                                get_logger().info(
+                                    f"persistent_inline_comments=skip: reopen failed for {existing.get('id')}; "
+                                    f"falling back to create-new"
+                                )
+                            else:
+                                reused_comment_ids.add(existing.get("id"))
+                                get_logger().info(
+                                    f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
+                                    f"on {relevant_file}; not re-posting")
+                                continue
+                        else:
+                            # mode == update
+                            if self.edit_review_comment(existing.get("id"), body):
+                                reused_comment_ids.add(existing.get("id"))
+                                # If we previously auto-resolved this thread but the
+                                # suggestion is back, unresolve it.
+                                if resolve_outdated and existing.get("is_resolved"):
+                                    self.unresolve_review_thread(existing)
+                                continue
                             get_logger().info(
-                                f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
-                                f"on {relevant_file}; not re-posting")
-                            continue
-                        # mode == update
-                        if self.edit_review_comment(existing.get("id"), body):
-                            # If we previously auto-resolved this thread but the
-                            # suggestion is back, unresolve it.
-                            if resolve_outdated and existing.get("is_resolved"):
-                                self.unresolve_review_thread(existing)
-                            continue
-                        get_logger().info(
-                            f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
-                            f"falling back to create-new")
+                                f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
+                                f"falling back to create-new")
+                    elif mode == PERSISTENT_MODE_SKIP:
+                        # No same-location match, so allow a new inline comment and
+                        # let the outdated pass resolve any stale thread with this marker.
+                        pass
 
             if relevant_lines_end > relevant_lines_start:
                 post_parameters = {
@@ -795,25 +821,24 @@ class GithubProvider(GitProvider):
             post_parameters_list.append(post_parameters)
 
         # ---- Outdated pass: resolve threads whose marker is no longer emitted ----
-        # existing_index is the snapshot from the initial fetch; matched-and-edited
-        # entries are excluded here by emitted_hashes, so staleness is not a concern.
         if mode != PERSISTENT_MODE_OFF and resolve_outdated:
-            for h, c in existing_index.items():
-                if h in emitted_hashes:
-                    continue
-                if c.get("is_resolved"):
-                    continue
-                if RESOLVED_BODY_MARKER in (c.get("body") or ""):
-                    continue
-                # Per-iteration guard so a single failure cannot propagate; criterion 8 of resolve-outdated-inline-comments.
-                try:
-                    if not self.resolve_review_thread(c):
+            for candidates in existing_index.values():
+                for c in candidates:
+                    if c.get("id") in reused_comment_ids:
                         continue
-                    self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
-                except Exception as e:
-                    get_logger().warning(
-                        f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
-                    )
+                    if c.get("is_resolved"):
+                        continue
+                    if RESOLVED_BODY_MARKER in (c.get("body") or ""):
+                        continue
+                    # Per-iteration guard so a single failure cannot propagate; criterion 8 of resolve-outdated-inline-comments.
+                    try:
+                        if not self.resolve_review_thread(c):
+                            continue
+                        self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                    except Exception as e:
+                        get_logger().warning(
+                            f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
+                        )
 
         if not post_parameters_list:
             return True

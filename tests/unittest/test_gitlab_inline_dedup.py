@@ -117,7 +117,13 @@ class TestUpdateMode:
         marker = generate_marker(s["original_suggestion"])
         existing_body = "old body\n\n" + marker
         p.get_bot_review_comments = MagicMock(
-            return_value=[{"id": 777, "body": existing_body, "path": s["relevant_file"]}]
+            return_value=[{
+                "id": 777,
+                "body": existing_body,
+                "path": s["relevant_file"],
+                "line": s["relevant_lines_end"],
+                "start_line": s["relevant_lines_start"],
+            }]
         )
         p.edit_review_comment = MagicMock(return_value=True)
         p.send_inline_comment = MagicMock()
@@ -139,7 +145,13 @@ class TestUpdateMode:
         s = _sug()
         marker = generate_marker(s["original_suggestion"])
         p.get_bot_review_comments = MagicMock(
-            return_value=[{"id": 777, "body": "old " + marker, "path": s["relevant_file"]}]
+            return_value=[{
+                "id": 777,
+                "body": "old " + marker,
+                "path": s["relevant_file"],
+                "line": s["relevant_lines_end"],
+                "start_line": s["relevant_lines_start"],
+            }]
         )
         p.edit_review_comment = MagicMock(return_value=False)
         p.send_inline_comment = MagicMock()
@@ -163,7 +175,13 @@ class TestUpdateMode:
         marker_matched = generate_marker(matched["original_suggestion"])
 
         p.get_bot_review_comments = MagicMock(
-            return_value=[{"id": 1, "body": marker_matched, "path": matched["relevant_file"]}]
+            return_value=[{
+                "id": 1,
+                "body": marker_matched,
+                "path": matched["relevant_file"],
+                "line": matched["relevant_lines_end"],
+                "start_line": matched["relevant_lines_start"],
+            }]
         )
         p.edit_review_comment = MagicMock(return_value=True)
         p.send_inline_comment = MagicMock()
@@ -211,7 +229,13 @@ class TestSkipMode:
         s = _sug()
         marker = generate_marker(s["original_suggestion"])
         p.get_bot_review_comments = MagicMock(
-            return_value=[{"id": 1, "body": marker, "path": s["relevant_file"]}]
+            return_value=[{
+                "id": 1,
+                "body": marker,
+                "path": s["relevant_file"],
+                "line": s["relevant_lines_end"],
+                "start_line": s["relevant_lines_start"],
+            }]
         )
         p.edit_review_comment = MagicMock()
         p.send_inline_comment = MagicMock()
@@ -239,6 +263,35 @@ class TestSkipMode:
             p.publish_code_suggestions([_sug()])
 
         p.send_inline_comment.assert_called_once()
+
+    def test_resolved_match_reopens_and_refreshes_body(self):
+        p = _make_provider()
+        s = _sug()
+        marker = generate_marker(s["original_suggestion"])
+        existing = {
+            "id": 22,
+            "thread_id": "DIS-22",
+            "discussion_id": "DIS-22",
+            "body": f"old body\n\n---\n_{RESOLVED_NOTE}_\n{RESOLVED_BODY_MARKER}\n\n{marker}",
+            "path": s["relevant_file"],
+            "line": s["relevant_lines_end"],
+            "start_line": s["relevant_lines_start"],
+            "is_resolved": True,
+        }
+        p.get_bot_review_comments = MagicMock(return_value=[existing])
+        p.edit_review_comment = MagicMock(return_value=True)
+        p.unresolve_review_thread = MagicMock(return_value=True)
+        p.send_inline_comment = MagicMock()
+        p.get_diff_files = MagicMock(return_value=[])
+        with _set_settings(persistent_mode="skip", resolve_outdated=True):
+            p.publish_code_suggestions([s])
+        p.edit_review_comment.assert_called_once()
+        called_id, called_body = p.edit_review_comment.call_args[0]
+        assert called_id == 22
+        assert s["body"] in called_body
+        assert RESOLVED_BODY_MARKER not in called_body
+        p.unresolve_review_thread.assert_called_once_with(existing)
+        p.send_inline_comment.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +646,30 @@ class TestGitLabOutdatedPass:
         assert called_id == 10
         assert RESOLVED_NOTE in called_body
         assert RESOLVED_BODY_MARKER in called_body
+
+    def test_same_marker_different_location_creates_new_and_resolves_old(self):
+        p = self._provider()
+        s = _sug(start=40, end=42)
+        marker = generate_marker(s["original_suggestion"])
+        existing = _gl_existing(c_id=9, marker=marker)
+        p.get_bot_review_comments = MagicMock(return_value=[existing])
+        p.edit_review_comment = MagicMock(return_value=True)
+        p.resolve_review_thread = MagicMock(return_value=True)
+        p.unresolve_review_thread = MagicMock()
+        fake_file = MagicMock()
+        fake_file.filename = "src/app.py"
+        fake_file.head_file = "\n".join(f"line{i}" for i in range(1, 80))
+        p.get_diff_files = MagicMock(return_value=[fake_file])
+        with _set_settings(persistent_mode="update", resolve_outdated=True):
+            p.publish_code_suggestions([s])
+        p.send_inline_comment.assert_called_once()
+        p.resolve_review_thread.assert_called_once_with(existing)
+        p.unresolve_review_thread.assert_not_called()
+        p.edit_review_comment.assert_called_once()
+        called_id, called_body = p.edit_review_comment.call_args[0]
+        assert called_id == 9
+        assert RESOLVED_NOTE in called_body
+        assert s["body"] not in called_body
 
     def test_already_resolved_is_skipped(self):
         p = self._provider()
