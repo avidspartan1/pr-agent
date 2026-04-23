@@ -484,13 +484,7 @@ class TestOutdatedPass:
 class TestStructuredHashLivePath:
     """End-to-end: paraphrased prose + identical improved_code → update, not create."""
 
-    def test_paraphrased_prose_same_edit_routes_to_edit_review_comment(self):
-        from pr_agent.algo.inline_comments_dedup import (
-            MARKER_PREFIX,
-            MARKER_SUFFIX,
-            generate_marker,
-        )
-
+    def test_paraphrased_prose_same_edit_routes_to_edit_review_comment(self, provider):
         # Two suggestions that differ only in wording; improved_code is identical.
         improved = "cleanup_mode=None if dry_run else cleanup_mode,"
         file = "src/release.py"
@@ -518,19 +512,6 @@ class TestStructuredHashLivePath:
         assert marker_first == marker_second, \
             "paraphrased prose with identical improved_code must collide"
 
-        # Build a provider as in the existing test helpers, with an
-        # existing comment carrying the v2s marker in its body.
-        with patch("pr_agent.git_providers.github_provider.GithubProvider._get_repo"), \
-             patch("pr_agent.git_providers.github_provider.GithubProvider.set_pr"), \
-             patch("pr_agent.git_providers.github_provider.GithubProvider._get_pr"):
-            from pr_agent.git_providers.github_provider import GithubProvider
-            provider = GithubProvider.__new__(GithubProvider)
-            provider.pr = MagicMock()
-            provider.base_url = "https://api.github.com"
-            provider.repo = "owner/repo"
-            provider.deployment_type = "user"
-            provider.github_user_id = "pr-agent-bot"
-
         existing_comment = {
             "id": 777,
             "thread_id": "T1",
@@ -543,10 +524,7 @@ class TestStructuredHashLivePath:
         provider.get_bot_review_comments = MagicMock(return_value=[existing_comment])
         provider.edit_review_comment = MagicMock(return_value=True)
         provider.unresolve_review_thread = MagicMock()
-        provider.validate_comments_inside_hunks = lambda xs: xs
-        provider.pr.create_review = MagicMock()
 
-        # The suggestion dict shape expected by publish_code_suggestions.
         body_text = (
             "**Suggestion:** paraphrased wording, same fix [possible issue]\n"
             "```suggestion\n"
@@ -564,10 +542,8 @@ class TestStructuredHashLivePath:
         with _set_mode("update"):
             provider.publish_code_suggestions([code_suggestion])
 
-        # Update path: edit called once with the existing comment's id;
-        # create_review not called.
         provider.edit_review_comment.assert_called_once()
-        (called_id, called_body), _ = provider.edit_review_comment.call_args
+        called_id, called_body = provider.edit_review_comment.call_args[0]
         assert called_id == 777
         assert marker_first in called_body
         provider.pr.create_review.assert_not_called()
