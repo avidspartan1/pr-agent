@@ -147,8 +147,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Models that support reasoning effort
         self.support_reasoning_models = SUPPORT_REASONING_EFFORT_MODELS
 
-        # Models that support extended thinking
-        self.claude_extended_thinking_models = CLAUDE_EXTENDED_THINKING_MODELS
+        # Models that support extended thinking (config override replaces the built-in list when non-empty)
+        override = get_settings().config.get("claude_extended_thinking_models_override", []) or []
+        self.claude_extended_thinking_models = list(override) if override else CLAUDE_EXTENDED_THINKING_MODELS
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
