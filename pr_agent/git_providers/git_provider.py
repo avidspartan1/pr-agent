@@ -339,6 +339,52 @@ class GitProvider(ABC):
     def publish_inline_comments(self, comments: list[dict]):
         pass
 
+    def get_bot_review_comments(self) -> list[dict]:
+        """
+        Return the bot's existing inline (review) comments on the current PR.
+
+        Each dict must contain at least:
+            - 'id':   provider-specific comment id (used by edit_review_comment)
+            - 'body': full comment body (used for marker extraction)
+
+        Default: return []. Providers that support inline-comment dedup should override.
+        """
+        return []
+
+    def edit_review_comment(self, comment_id, body: str) -> bool:
+        """
+        Edit an existing inline (review) comment in place.
+
+        Returns True on success, False otherwise. Default: return False (unsupported),
+        which causes persistent-inline-comment dedup to fall back to the create-new path.
+        """
+        return False
+
+    def resolve_review_thread(self, comment: dict) -> bool:
+        """
+        Mark the review thread containing `comment` as resolved.
+
+        `comment` is one of the dicts returned by get_bot_review_comments();
+        providers extract whichever id (thread_id, discussion_id, etc.) they need.
+
+        Returns True on success, False otherwise. Default: return False (unsupported),
+        which causes the resolve-outdated pass to skip this comment.
+
+        Providers wiring this in must also override get_bot_review_comments to
+        include is_resolved on each dict and wire the outdated pass into their
+        publish_code_suggestions; without all three the feature silently no-ops.
+        """
+        return False
+
+    def unresolve_review_thread(self, comment: dict) -> bool:
+        """
+        Mark the review thread containing `comment` as unresolved.
+
+        Used when a previously auto-resolved suggestion is re-emitted on a later run.
+        Returns True on success, False otherwise. Default: return False (unsupported).
+        """
+        return False
+
     @abstractmethod
     def remove_initial_comment(self):
         pass
