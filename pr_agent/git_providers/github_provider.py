@@ -737,7 +737,8 @@ class GithubProvider(GitProvider):
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
             return contents
-        except Exception:
+        except Exception as e:
+            get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
             return ""
 
     def get_workspace_name(self):
