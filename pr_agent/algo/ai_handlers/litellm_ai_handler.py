@@ -149,6 +149,19 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         # Models that support extended thinking (config override replaces the built-in list when non-empty)
         override = get_settings().config.get("claude_extended_thinking_models_override", []) or []
+        if override and not isinstance(override, list):
+            get_logger().warning(
+                "Invalid claude_extended_thinking_models_override in config; expected a list of model names. "
+                "Falling back to the built-in Claude extended-thinking model list."
+            )
+            override = []
+        elif override and not all(isinstance(model, str) and model.strip() for model in override):
+            get_logger().warning(
+                "Invalid claude_extended_thinking_models_override in config; "
+                "expected a list of model name strings. "
+                "Falling back to the built-in Claude extended-thinking model list."
+            )
+            override = []
         self.claude_extended_thinking_models = list(override) if override else CLAUDE_EXTENDED_THINKING_MODELS
 
         # Models that require streaming
