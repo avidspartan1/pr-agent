@@ -874,7 +874,16 @@ class GitLabProvider(GitProvider):
                     try:
                         if not self.resolve_review_thread(c):
                             continue
-                        self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                        if not self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or "")):
+                            get_logger().warning(
+                                f"resolve_outdated_inline_comments: failed to write resolved marker for "
+                                f"GitLab comment {c.get('id')}; attempting to unresolve thread"
+                            )
+                            if not self.unresolve_review_thread(c):
+                                get_logger().warning(
+                                    f"resolve_outdated_inline_comments: failed to unresolve GitLab thread "
+                                    f"after marker write failed for comment {c.get('id')}"
+                                )
                     except Exception as e:
                         get_logger().warning(
                             f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"

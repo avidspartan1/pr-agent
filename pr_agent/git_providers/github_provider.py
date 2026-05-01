@@ -7,7 +7,7 @@ import time
 import traceback
 import json
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from urllib.parse import urlparse
 
 from github.Issue import Issue
@@ -40,6 +40,35 @@ from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
                            IncrementalPR)
+
+
+_TRUE_CONFIG_VALUES = {"1", "true", "t", "yes", "y", "on"}
+_FALSE_CONFIG_VALUES = {"0", "false", "f", "no", "n", "off"}
+
+
+def _normalize_bool_config(raw: Any, *, default: bool, setting_name: str) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in _TRUE_CONFIG_VALUES:
+            return True
+        if value in _FALSE_CONFIG_VALUES:
+            return False
+
+    get_logger().warning(
+        f"Invalid boolean value for {setting_name}: {raw!r}. "
+        f"Expected one of true/false, 1/0, yes/no, or on/off; using default {default!r}."
+    )
+    return default
+
+
+def _is_valid_review_comment_id(comment_id: Any) -> bool:
+    return isinstance(comment_id, int) and not isinstance(comment_id, bool)
 
 
 class GithubProvider(GitProvider):
@@ -641,8 +670,14 @@ class GithubProvider(GitProvider):
                             same_author = bool(bot_user_id) and login == bot_user_id
                         if not same_author:
                             continue
+                        comment_id = c.get("databaseId")
+                        if not _is_valid_review_comment_id(comment_id):
+                            get_logger().warning(
+                                f"Skipping GitHub review comment with invalid databaseId: {comment_id!r}"
+                            )
+                            continue
                         out.append({
-                            "id": c.get("databaseId"),
+                            "id": comment_id,
                             "thread_id": thread_id,
                             "body": c.get("body") or "",
                             "path": c.get("path"),
@@ -659,6 +694,9 @@ class GithubProvider(GitProvider):
             return []
 
     def edit_review_comment(self, comment_id, body: str) -> bool:
+        if not _is_valid_review_comment_id(comment_id):
+            get_logger().warning(f"Skipping GitHub review comment edit with invalid id: {comment_id!r}")
+            return False
         try:
             body = self.limit_output_characters(body, self.max_comment_chars)
             self.pr._requester.requestJsonAndCheck(
@@ -723,8 +761,10 @@ class GithubProvider(GitProvider):
         mode = normalize_persistent_mode(
             get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
         )
-        resolve_outdated = bool(
-            get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True)
+        resolve_outdated = _normalize_bool_config(
+            get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True),
+            default=True,
+            setting_name="pr_code_suggestions.resolve_outdated_inline_comments",
         )
 
         existing_index: dict[str, list[dict]] = {}
@@ -766,37 +806,47 @@ class GithubProvider(GitProvider):
                         relevant_lines_end,
                     )
                     if existing is not None:
+                        existing_id = existing.get("id")
+                        if not _is_valid_review_comment_id(existing_id):
+                            get_logger().warning(
+                                f"persistent_inline_comments: ignoring existing GitHub comment with invalid id "
+                                f"{existing_id!r} on {relevant_file}"
+                            )
+                            existing = None
+                        else:
+                            existing_id = int(existing_id)
+                    if existing is not None:
                         if mode == PERSISTENT_MODE_SKIP:
                             if resolve_outdated and (
                                 existing.get("is_resolved")
                                 or RESOLVED_BODY_MARKER in (existing.get("body") or "")
                             ):
-                                if self.edit_review_comment(existing.get("id"), body):
-                                    reused_comment_ids.add(existing.get("id"))
+                                if self.edit_review_comment(existing_id, body):
+                                    reused_comment_ids.add(existing_id)
                                     if existing.get("is_resolved"):
                                         self.unresolve_review_thread(existing)
                                     continue
                                 get_logger().info(
-                                    f"persistent_inline_comments=skip: reopen failed for {existing.get('id')}; "
+                                    f"persistent_inline_comments=skip: reopen failed for {existing_id}; "
                                     f"falling back to create-new"
                                 )
                             else:
-                                reused_comment_ids.add(existing.get("id"))
+                                reused_comment_ids.add(existing_id)
                                 get_logger().info(
-                                    f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
+                                    f"persistent_inline_comments=skip: existing comment {existing_id} "
                                     f"on {relevant_file}; not re-posting")
                                 continue
                         else:
                             # mode == update
-                            if self.edit_review_comment(existing.get("id"), body):
-                                reused_comment_ids.add(existing.get("id"))
+                            if self.edit_review_comment(existing_id, body):
+                                reused_comment_ids.add(existing_id)
                                 # If we previously auto-resolved this thread but the
                                 # suggestion is back, unresolve it.
                                 if resolve_outdated and existing.get("is_resolved"):
                                     self.unresolve_review_thread(existing)
                                 continue
                             get_logger().info(
-                                f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
+                                f"persistent_inline_comments=update: edit failed for {existing_id}; "
                                 f"falling back to create-new")
                     elif mode == PERSISTENT_MODE_SKIP:
                         # No same-location match, so allow a new inline comment and
@@ -824,7 +874,15 @@ class GithubProvider(GitProvider):
         if mode != PERSISTENT_MODE_OFF and resolve_outdated:
             for candidates in existing_index.values():
                 for c in candidates:
-                    if c.get("id") in reused_comment_ids:
+                    comment_id = c.get("id")
+                    if not _is_valid_review_comment_id(comment_id):
+                        get_logger().warning(
+                            f"resolve_outdated_inline_comments: skipping GitHub comment with invalid id "
+                            f"{comment_id!r}"
+                        )
+                        continue
+                    comment_id = int(comment_id)
+                    if comment_id in reused_comment_ids:
                         continue
                     if c.get("is_resolved"):
                         continue
@@ -834,10 +892,19 @@ class GithubProvider(GitProvider):
                     try:
                         if not self.resolve_review_thread(c):
                             continue
-                        self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or ""))
+                        if not self.edit_review_comment(comment_id, format_resolved_body(c.get("body") or "")):
+                            get_logger().warning(
+                                f"resolve_outdated_inline_comments: failed to write resolved marker for "
+                                f"GitHub comment {comment_id}; attempting to unresolve thread"
+                            )
+                            if not self.unresolve_review_thread(c):
+                                get_logger().warning(
+                                    f"resolve_outdated_inline_comments: failed to unresolve GitHub thread "
+                                    f"after marker write failed for comment {comment_id}"
+                                )
                     except Exception as e:
                         get_logger().warning(
-                            f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
+                            f"resolve_outdated_inline_comments: outdated pass failed for {comment_id}: {e}"
                         )
 
         if not post_parameters_list:

@@ -751,6 +751,27 @@ class TestGitLabOutdatedPass:
         p.resolve_review_thread.assert_called_once()
         p.edit_review_comment.assert_not_called()
 
+    def test_edit_failure_after_resolve_unresolves_thread(self):
+        p = self._provider()
+        s_emitted = _sug(content="A new suggestion", start=40, end=42)
+        marker_outdated = generate_marker(_sug(content="Old")["original_suggestion"])
+        existing = _gl_existing(c_id=16, marker=marker_outdated)
+        p.get_bot_review_comments = MagicMock(return_value=[existing])
+        p.edit_review_comment = MagicMock(return_value=False)
+        p.resolve_review_thread = MagicMock(return_value=True)
+        p.unresolve_review_thread = MagicMock(return_value=True)
+        with _set_settings(persistent_mode="update", resolve_outdated=True), \
+             patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
+            logger = MagicMock()
+            mock_get_logger.return_value = logger
+            p.publish_code_suggestions([s_emitted])
+        p.resolve_review_thread.assert_called_once_with(existing)
+        p.edit_review_comment.assert_called_once()
+        p.unresolve_review_thread.assert_called_once_with(existing)
+        warning_message = logger.warning.call_args[0][0]
+        assert "failed to write resolved marker" in warning_message
+        assert "16" in warning_message
+
     def test_existing_hash_re_emitted_skips_outdated_resolve(self):
         p = self._provider()
         s = _sug()
