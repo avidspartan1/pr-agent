@@ -735,14 +735,33 @@ class GithubProvider(GitProvider):
         return self.pr.get_issue_comments()
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
+
         try:
             # contents = self.repo_obj.get_contents(".pr_agent.toml", ref=self.pr.head.sha).decoded_content
-
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
-            return contents
+            settings_files.append(("local", contents))
         except Exception as e:
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
+
+        return settings_files if settings_files else ""
+
+    def _get_global_repo_settings(self):
+        if not get_settings().config.use_global_settings_file:
+            return ""
+
+        try:
+            repo_owner = self.get_pr_owner_id()
+            if not repo_owner:
+                return ""
+            global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
+            return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
+        except Exception as e:
+            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
             return ""
 
     def get_repo_file_content(self, file_path: str):
