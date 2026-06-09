@@ -443,6 +443,16 @@ class GithubProvider(GitProvider):
                 # path and comment content instead so it stays stable across runs.
                 body_fp = body_fingerprint(path, None, body)
                 code_fp = code_fingerprint(path, None, body)
+                has_suggestion_fence = "```suggestion" in body
+                if has_suggestion_fence:
+                    body_format = "suggestion"
+                    code_fp_reason = "empty_suggestion_block" if code_fp is None else "generated"
+                elif "```diff" in body:
+                    body_format = "diff"
+                    code_fp_reason = "no_suggestion_fence"
+                else:
+                    body_format = "prose"
+                    code_fp_reason = "no_suggestion_fence"
                 body_seen = store.seen(body_fp)
                 code_seen = store.seen(code_fp)
                 body_seen_locally = body_fp in local_seen
@@ -458,6 +468,7 @@ class GithubProvider(GitProvider):
                 get_logger().debug(
                     "Persistent inline comments: GitHub candidate "
                     f"path={path} body_fp={body_fp} code_fp={code_fp} "
+                    f"body_format={body_format} code_fp_reason={code_fp_reason} "
                     f"body_seen={body_seen} code_seen={code_seen} action={action} "
                     f"body_seen_locally={body_seen_locally} "
                     f"code_seen_locally={code_seen_locally}"

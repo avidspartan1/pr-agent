@@ -162,7 +162,8 @@ def test_github_logs_dedup_decisions_without_comment_bodies():
     debug_messages = [call.args[0] for call in get_logger.return_value.debug.call_args_list]
     assert any("enabled=True candidates=2 disable_fallback=False" in message for message in debug_messages)
     assert any(
-        f"path=a.py body_fp={seen_fp} code_fp=None body_seen=True code_seen=False action=skip" in message
+        f"path=a.py body_fp={seen_fp} code_fp=None" in message
+        and "body_seen=True code_seen=False action=skip" in message
         for message in debug_messages
     )
     assert any(
@@ -170,6 +171,28 @@ def test_github_logs_dedup_decisions_without_comment_bodies():
         for message in debug_messages
     )
     assert not any("old body" in message or "new body" in message for message in debug_messages)
+
+
+def test_github_logs_why_code_fingerprint_is_missing():
+    p = _gh_provider([])
+    gs = _patch_flag(True)
+    try:
+        with patch("pr_agent.git_providers.github_provider.get_logger") as get_logger:
+            p.publish_inline_comments([
+                {
+                    "path": "a.py",
+                    "line": 10,
+                    "body": "**Suggestion:** moved\n```diff\n-old\n+new\n```",
+                },
+            ])
+    finally:
+        gs.stop()
+
+    debug_messages = [call.args[0] for call in get_logger.return_value.debug.call_args_list]
+    assert any(
+        "code_fp=None body_format=diff code_fp_reason=no_suggestion_fence" in message
+        for message in debug_messages
+    )
 
 
 def test_github_all_duplicates_skips_publish():
