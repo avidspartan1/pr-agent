@@ -150,11 +150,22 @@ class InlineCommentStore:
     def load(self) -> set:
         if self._loaded:
             return self._keys
+        comments_scanned = 0
+        markers_found = 0
         try:
             for body in iter_existing_inline_comment_bodies(self._git_provider):
+                comments_scanned += 1
                 for marker_re in (BODY_MARKER_RE, CODE_MARKER_RE):
                     for match in marker_re.finditer(body or ""):
+                        markers_found += 1
                         self._keys.add(match.group(1))
+            from pr_agent.log import get_logger
+            get_logger().debug(
+                "Persistent inline comments: marker scan complete "
+                f"provider={type(self._git_provider).__name__} "
+                f"comments_scanned={comments_scanned} markers_found={markers_found} "
+                f"unique_fingerprints={len(self._keys)}"
+            )
         except Exception as e:
             from pr_agent.log import get_logger
             get_logger().info(

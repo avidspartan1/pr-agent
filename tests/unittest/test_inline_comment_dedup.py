@@ -85,6 +85,23 @@ def test_store_scans_both_marker_forms():
     assert store.seen(None) is False
 
 
+def test_store_logs_marker_scan_summary():
+    fp_body = d.body_fingerprint("a.py", 1, "alpha")
+    prov = _gh_provider([
+        f"alpha\n\n<!-- pr-agent-dedup: {fp_body} -->",
+        "comment without a marker",
+    ])
+
+    with patch("pr_agent.log.get_logger") as get_logger:
+        d.InlineCommentStore(prov).load()
+
+    debug_messages = [call.args[0] for call in get_logger.return_value.debug.call_args_list]
+    assert any(
+        "provider=GithubProvider comments_scanned=2 markers_found=1 unique_fingerprints=1" in message
+        for message in debug_messages
+    )
+
+
 def test_store_load_failure_degrades_to_empty():
     prov = _gh_provider([])
     prov.pr.get_comments.side_effect = RuntimeError("api down")
@@ -127,6 +144,32 @@ def test_github_filters_seen_and_marks_new():
     assert len(published) == 1
     assert published[0]["path"] == "b.py"
     assert "<!-- pr-agent-dedup:" in published[0]["body"]
+
+
+def test_github_logs_dedup_decisions_without_comment_bodies():
+    seen_fp = d.body_fingerprint("a.py", None, "old body")
+    p = _gh_provider([f"old body\n\n<!-- pr-agent-dedup: {seen_fp} -->"])
+    gs = _patch_flag(True)
+    try:
+        with patch("pr_agent.git_providers.github_provider.get_logger") as get_logger:
+            p.publish_inline_comments([
+                {"path": "a.py", "line": 10, "body": "old body"},
+                {"path": "b.py", "line": 20, "body": "new body"},
+            ])
+    finally:
+        gs.stop()
+
+    debug_messages = [call.args[0] for call in get_logger.return_value.debug.call_args_list]
+    assert any("enabled=True candidates=2 disable_fallback=False" in message for message in debug_messages)
+    assert any(
+        f"path=a.py body_fp={seen_fp} code_fp=None body_seen=True code_seen=False action=skip" in message
+        for message in debug_messages
+    )
+    assert any(
+        "path=b.py" in message and "body_seen=False code_seen=False action=publish" in message
+        for message in debug_messages
+    )
+    assert not any("old body" in message or "new body" in message for message in debug_messages)
 
 
 def test_github_all_duplicates_skips_publish():

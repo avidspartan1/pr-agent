@@ -421,7 +421,13 @@ class GithubProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
         pending_fingerprints = []
-        if get_settings().get("config.persistent_inline_comments", False):
+        persistent_inline_comments = get_settings().get("config.persistent_inline_comments", False)
+        get_logger().debug(
+            "Persistent inline comments: GitHub publish start "
+            f"enabled={persistent_inline_comments} candidates={len(comments)} "
+            f"disable_fallback={disable_fallback}"
+        )
+        if persistent_inline_comments:
             store = get_inline_comment_store(self)
             local_seen = set()
             deduped = []
@@ -437,13 +443,26 @@ class GithubProvider(GitProvider):
                 # path and comment content instead so it stays stable across runs.
                 body_fp = body_fingerprint(path, None, body)
                 code_fp = code_fingerprint(path, None, body)
+                body_seen = store.seen(body_fp)
+                code_seen = store.seen(code_fp)
+                body_seen_locally = body_fp in local_seen
+                code_seen_locally = bool(code_fp and code_fp in local_seen)
                 # A fallback re-publish (disable_fallback=True) is for a comment
                 # that has not been posted yet, so do not filter it; only the
                 # top-level call drops duplicates. The fallback still gets marked
                 # and recorded below so it dedups on later runs.
-                if not disable_fallback and (
-                        store.seen(body_fp) or store.seen(code_fp)
-                        or body_fp in local_seen or (code_fp and code_fp in local_seen)):
+                is_duplicate = (
+                    body_seen or code_seen or body_seen_locally or code_seen_locally
+                )
+                action = "skip" if is_duplicate and not disable_fallback else "publish"
+                get_logger().debug(
+                    "Persistent inline comments: GitHub candidate "
+                    f"path={path} body_fp={body_fp} code_fp={code_fp} "
+                    f"body_seen={body_seen} code_seen={code_seen} action={action} "
+                    f"body_seen_locally={body_seen_locally} "
+                    f"code_seen_locally={code_seen_locally}"
+                )
+                if action == "skip":
                     skipped += 1
                     continue
                 if has_marker(body):
@@ -457,6 +476,10 @@ class GithubProvider(GitProvider):
                 if code_fp:
                     local_seen.add(code_fp)
                 pending_fingerprints.append((body_fp, code_fp))
+            get_logger().debug(
+                "Persistent inline comments: GitHub dedup complete "
+                f"candidates={len(comments)} skipped={skipped} publishing={len(deduped)}"
+            )
             if skipped and not any(deduped):
                 get_logger().info(
                     f"Persistent inline comments: all {skipped} suggestion(s) "
